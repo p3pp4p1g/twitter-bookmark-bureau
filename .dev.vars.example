@@ -15,5 +15,9 @@ GEMINI_API_KEY=""
 # Required for Worker-side X bookmark sync and scheduled cron.
 X_API_KEY=""
 
+# Required for Worker-side Telegram notifications.
+TELEGRAM_BOT_API=""
+TELEGRAM_CHAT_ID=""
+
 # Optional dedicated R2 bucket for mirrored media. If omitted, RAW_BOOKMARKS is reused.
 # MEDIA_BUCKET=""

@@ -14,6 +14,20 @@ It ingests bookmarks using a logged-in X web session, mirrors media to Cloudflar
 - serves a protected web UI with search, filters, infinite scroll, and inline media previews
 - sends operational notifications to Telegram on meaningful state changes
 
+## Recommended Procedure
+
+The recommended operating model is:
+
+1. **Bootstrap locally once**
+2. **Run daily incremental sync on Cloudflare**
+
+Why:
+
+- the initial import and historical recovery are the heaviest and least predictable operations
+- the daily delta is small and fits the Cloudflare Worker free tier much better
+- production no longer depends on leaving a personal machine turned on
+- local tooling stays useful for exceptional recovery without being part of the normal daily loop
+
 ## Architecture
 
 This project is intentionally split into two runtimes.
@@ -28,7 +42,9 @@ Owns the product surface:
 - R2 media + raw snapshot storage
 - Gemini categorization
 - server-side access gate with PSK
-- optional fallback scheduled sync
+- daily scheduled sync
+- media mirroring for the daily delta
+- Telegram notifications for operational state changes
 
 Main files:
 
@@ -37,14 +53,14 @@ Main files:
 - `src/worker/gemini.ts`
 - `src/worker/twitter-sync.ts`
 
-### 2. Local / WSL Agent
+### 2. Local Bootstrap / Recovery Tooling
 
-Owns the operational sync work:
+Used only for heavy or exceptional operations:
 
 - initial backfill from manual export
-- daily sync against X using a valid browser session
-- media reconciliation and upload to the Worker
-- Telegram notifications
+- historical recovery when the export missed older bookmarks
+- one-off media reconciliation or repair
+- manual recovery flows when X changes behavior
 
 Main files:
 
@@ -101,18 +117,18 @@ This repo is original code, but these projects informed the approach:
 
 1. Export bookmarks with `twitter-web-exporter`
 2. Put the export file in `manual_export/`
-3. Run `npm run agent:backfill`
-4. The agent imports only missing bookmarks
-5. The agent mirrors missing media
-6. The Worker classifies bookmarks with Gemini
+3. Run `npm run agent:backfill` from a local Linux environment, or any other bash-compatible local setup
+4. The local tooling imports only missing bookmarks
+5. The local tooling mirrors missing media
+6. The Worker stores the archive in D1/R2 and classifies bookmarks with Gemini
 
 ### Daily / Phase 2
 
-1. The WSL agent runs at `03:00`
-2. It reads recent bookmarks from X using the web session cookies
+1. The Cloudflare Worker runs at `03:00` BRT
+2. It reads recent bookmarks from X using the persisted `X_API_KEY` session cookie bundle
 3. It stops when it reaches already-known pages
 4. It imports only new bookmarks
-5. It mirrors missing media
+5. It mirrors only the new media for that daily delta
 6. It sends Telegram notifications only on relevant state changes
 
 ### Historical Recovery / Phase 3
@@ -145,7 +161,7 @@ There are two classes of secrets: runtime secrets and provisioning/deploy secret
 ### Cloudflare / Worker runtime
 
 - `INGEST_API_KEY`
-  - shared secret for the local agent to call admin endpoints
+  - shared secret for local bootstrap/recovery tooling to call admin endpoints
 - `GEMINI_API_KEY`
   - used for categorization
 - `SITE_PSK`
@@ -153,16 +169,17 @@ There are two classes of secrets: runtime secrets and provisioning/deploy secret
 - `SESSION_SECRET`
   - signs the app session cookie
 - `X_API_KEY`
-  - optional
-  - lets the Worker itself perform fallback bookmark sync
+  - required for Worker-side daily bookmark sync
   - format: raw cookie bundle or base64-encoded cookie bundle containing `auth_token` and `ct0`
+- `TELEGRAM_BOT_API`
+  - used by the Worker for operational notifications
+- `TELEGRAM_CHAT_ID`
+  - target chat for Worker notifications
 
-### Local / WSL agent
+### Local bootstrap / recovery tooling
 
 - `BOOKMARK_BUREAU_BASE_URL`
 - `INGEST_API_KEY`
-- `TELEGRAM_BOT_TOKEN` or `TELEGRAM_BOT_API`
-- `TELEGRAM_CHAT_ID`
 - one of:
   - `X_API_KEY`
   - or `AUTH_TWITTER_TOKEN` + `CT0_TWITTER`
@@ -229,6 +246,9 @@ npm test
 npm run build
 ```
 
+For local bootstrap and recovery commands, assume a normal local Linux setup with `bash` and Node.js.
+WSL also works, but it is not required and is not part of the recommended production architecture.
+
 ## Cloudflare Provisioning
 
 1. Fill `.env.local`
@@ -284,11 +304,19 @@ What happens:
 
 ## Daily Sync
 
-Run once manually:
+The normal daily sync runs on the Cloudflare Worker cron at `03:00` BRT.
+
+You can also trigger the same Worker-side daily pipeline manually:
 
 ```bash
-npm run agent:daily
+curl -X POST \
+  -H "Authorization: Bearer $INGEST_API_KEY" \
+  https://<your-worker>.workers.dev/api/admin/sync/daily
 ```
+
+## Local Recovery Commands
+
+These are for bootstrap, repair, or exceptional recovery. They are not the recommended daily production loop.
 
 Run historical backfill once:
 
@@ -302,7 +330,7 @@ Run media backlog reconciliation only:
 npm run agent:media
 ```
 
-Install the WSL cron:
+Legacy local cron helper:
 
 ```bash
 npm run agent:cron:install
@@ -324,6 +352,7 @@ All admin endpoints require `INGEST_API_KEY`.
 - `POST /api/admin/media/upload`
 - `POST /api/admin/alerts`
 - `POST /api/admin/sync`
+- `POST /api/admin/sync/daily`
 
 ## Telegram Notifications
 
@@ -351,6 +380,7 @@ The current sync flow includes a few pragmatic safeguards:
 - separate pending-classification pass
 - separate media-only reconciliation pass
 - background runner to repeat historical passes until the archive stabilizes
+- daily sync living fully in Cloudflare so normal operation does not depend on a local machine
 
 ## Frontend
 
