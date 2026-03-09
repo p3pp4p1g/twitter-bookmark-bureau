@@ -1,0 +1,33 @@
+name = "bookmark-bureau"
+main = "src/worker/index.ts"
+account_id = "your-cloudflare-account-id"
+workers_dev = true
+compatibility_date = "2026-03-07"
+compatibility_flags = ["nodejs_compat"]
+
+[build]
+command = "npm run build"
+
+[assets]
+directory = "./dist"
+binding = "ASSETS"
+not_found_handling = "single-page-application"
+run_worker_first = true
+
+[vars]
+APP_TITLE = "Bookmark Bureau"
+DEFAULT_IMPORT_SOURCE = "manual"
+GEMINI_MODEL = "gemini-2.5-flash-lite"
+
+[triggers]
+crons = ["0 6 * * *"]
+
+[[d1_databases]]
+binding = "DB"
+database_name = "twitter-bookmarks"
+database_id = "your-d1-database-id"
+
+[[r2_buckets]]
+binding = "RAW_BOOKMARKS"
+bucket_name = "twitter-bookmarks-raw"
+preview_bucket_name = "twitter-bookmarks-raw"

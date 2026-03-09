@@ -1,0 +1,19 @@
+APP_TITLE="Bookmark Bureau"
+DEFAULT_IMPORT_SOURCE="manual"
+GEMINI_MODEL="gemini-2.5-flash-lite"
+
+# Optional server-side access gate for the whole app.
+SITE_PSK=""
+SESSION_SECRET=""
+
+# Required for local CLI -> cloud import.
+INGEST_API_KEY=""
+
+# Required for server-side auto categorization.
+GEMINI_API_KEY=""
+
+# Required for Worker-side X bookmark sync and scheduled cron.
+X_API_KEY=""
+
+# Optional dedicated R2 bucket for mirrored media. If omitted, RAW_BOOKMARKS is reused.
+# MEDIA_BUCKET=""
