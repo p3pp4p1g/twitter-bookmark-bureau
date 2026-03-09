@@ -195,7 +195,8 @@ export async function requireSiteSession(c: Context<{ Bindings: Env }>) {
 
 export function requireIngestKey(c: Context<{ Bindings: Env }>) {
   if (!c.env.INGEST_API_KEY) {
-    return c.json({ error: "INGEST_API_KEY is not configured" }, 503);
+    c.header("Cache-Control", "no-store, private");
+    return c.json({ error: "Service unavailable" }, 503);
   }
 
   const candidate = getIngestCredential(c);
@@ -221,7 +222,8 @@ export async function requireAdminAccess(c: Context<{ Bindings: Env }>) {
   }
 
   if (!c.env.SITE_PSK && !c.env.INGEST_API_KEY) {
-    return c.json({ error: "No admin access method is configured" }, 503);
+    c.header("Cache-Control", "no-store, private");
+    return c.json({ error: "Service unavailable" }, 503);
   }
 
   c.header("Cache-Control", "no-store, private");

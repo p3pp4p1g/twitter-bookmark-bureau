@@ -48,6 +48,11 @@ import {
 } from "./twitter-sync";
 const app = new Hono<{ Bindings: Env }>();
 
+function isServiceConfigError(error: unknown) {
+  const message = error instanceof Error ? error.message : String(error);
+  return /not configured|missing the ct0 cookie|is empty/i.test(message);
+}
+
 app.use("*", async (c, next) => {
   await next();
   c.header("X-Frame-Options", "DENY");
@@ -337,7 +342,7 @@ app.post("/api/admin/media/upload", async (c) => {
   const sizeBytes = Number(form.get("sizeBytes") ?? 0) || undefined;
 
   if (!(file instanceof File) || !bookmarkId || !mediaId || !sourceUrl) {
-    return c.json({ ok: false, error: "Missing required media upload fields" }, 400);
+    return c.json({ ok: false, error: "Invalid request" }, 400);
   }
 
   const result = await storeMirroredMedia(c.env, {
@@ -374,9 +379,8 @@ app.post("/api/admin/sync", async (c) => {
       result,
     });
   } catch (error) {
-    const message = error instanceof Error ? error.message : "Sync failed";
-    const status = /not configured/i.test(message) ? 503 : 500;
-    return c.json({ ok: false, error: message }, status);
+    const status = isServiceConfigError(error) ? 503 : 500;
+    return c.json({ ok: false, error: status === 503 ? "Service unavailable" : "Sync failed" }, status);
   }
 });
 
@@ -390,10 +394,8 @@ app.post("/api/admin/sync/daily", async (c) => {
     await runScheduledTwitterSync(c.env);
     return c.json({ ok: true });
   } catch (error) {
-    return c.json(
-      { ok: false, error: error instanceof Error ? error.message : String(error) },
-      500,
-    );
+    const status = isServiceConfigError(error) ? 503 : 500;
+    return c.json({ ok: false, error: status === 503 ? "Service unavailable" : "Sync failed" }, status);
   }
 });
 
