@@ -365,7 +365,7 @@ export async function upsertBookmarks(db: D1Database, bookmarks: BookmarkRecord[
             category_name = excluded.category_name,
             category_confidence = excluded.category_confidence,
             category_reason = excluded.category_reason,
-            manual_category_slug = COALESCE(bookmarks.manual_category_slug, excluded.manual_category_slug),
+            manual_category_slug = COALESCE(excluded.manual_category_slug, bookmarks.manual_category_slug),
             imported_at = excluded.imported_at,
             updated_at = excluded.updated_at
         `,
@@ -523,11 +523,16 @@ export async function pruneUnusedCategories(db: D1Database) {
     .prepare(
       `
         DELETE FROM categories
-        WHERE source = 'llm'
-          AND slug NOT IN (
-            SELECT DISTINCT category_slug
-            FROM bookmarks
-            WHERE category_slug IS NOT NULL
+        WHERE slug NOT IN (
+            SELECT DISTINCT slug FROM (
+              SELECT category_slug AS slug
+              FROM bookmarks
+              WHERE category_slug IS NOT NULL
+              UNION
+              SELECT manual_category_slug AS slug
+              FROM bookmarks
+              WHERE manual_category_slug IS NOT NULL
+            )
           )
       `,
     )

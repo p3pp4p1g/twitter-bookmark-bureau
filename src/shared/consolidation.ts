@@ -81,6 +81,41 @@ const CATEGORY_DEFINITIONS = {
     description:
       "Security research, bug bounty material, vulnerabilities, and defensive web practices.",
   },
+  "finance-investment": {
+    name: "Finance & Investment",
+    description:
+      "Personal finance, investing, valuation, trading, and broader financial market references.",
+  },
+  "business-strategy": {
+    name: "Business & Strategy",
+    description:
+      "Business models, strategic thinking, positioning, and commercial decision-making.",
+  },
+  "cooking-food": {
+    name: "Cooking & Food",
+    description:
+      "Recipes, cooking ideas, food culture, and culinary references.",
+  },
+  "education-personal-development": {
+    name: "Education & Personal Development",
+    description:
+      "Learning resources, books, productivity, career growth, and personal development material.",
+  },
+  "programming-technology": {
+    name: "Programming & Technology",
+    description:
+      "Programming, software development, and broader technology references.",
+  },
+  "web3-crypto": {
+    name: "Web3 & Crypto",
+    description:
+      "Blockchain, crypto, and adjacent decentralized technology topics.",
+  },
+  "health-wellness": {
+    name: "Health & Wellness",
+    description:
+      "Health, wellness, and self-care references.",
+  },
   "needs-review": {
     name: "Needs Review",
     description:
@@ -182,6 +217,33 @@ const ALIAS_TO_CANONICAL = new Map<string, string>([
   ["design-creative-inspiration", "design-development-workflow"],
   ["ai-society", "ai-society"],
   ["web-security", "web-security"],
+  ["finance-investment", "finance-investment"],
+  ["investimentos-e-financas-pessoais", "finance-investment"],
+  ["mercado-financeiro", "finance-investment"],
+  ["finance-economics", "finance-investment"],
+  ["financas-pessoais-e-investimentos", "finance-investment"],
+  ["business-finance", "finance-investment"],
+  ["investimentos-e-financas", "finance-investment"],
+  ["finance-business-valuation", "finance-investment"],
+  ["finance-trading", "finance-investment"],
+  ["business-strategy", "business-strategy"],
+  ["social-media-strategy", "marketing-growth"],
+  ["cooking-recipes", "cooking-food"],
+  ["culinaria-e-receitas", "cooking-food"],
+  ["food-culture", "cooking-food"],
+  ["food-recipes", "cooking-food"],
+  ["education-learning", "education-personal-development"],
+  ["education-learning-resources", "education-personal-development"],
+  ["career-education", "education-personal-development"],
+  ["book-recommendations", "education-personal-development"],
+  ["personal-development-books", "education-personal-development"],
+  ["personal-development-productivity", "education-personal-development"],
+  ["programacao-e-desenvolvimento", "programming-technology"],
+  ["programming-development", "programming-technology"],
+  ["technology-trends", "programming-technology"],
+  ["web3-blockchain", "web3-crypto"],
+  ["web3-crypto", "web3-crypto"],
+  ["health-wellness", "health-wellness"],
   ["needs-review", "needs-review"],
 ]);
 
@@ -207,7 +269,11 @@ function makeCategory(slug: string): CategoryRecord {
 }
 
 function getEffectiveCategorySlug(bookmark: BookmarkRecord): string | undefined {
-  return bookmark.categorySlug ?? (bookmark.categoryName ? slugifyCategoryName(bookmark.categoryName) : undefined);
+  return (
+    bookmark.manualCategorySlug ??
+    bookmark.categorySlug ??
+    (bookmark.categoryName ? slugifyCategoryName(bookmark.categoryName) : undefined)
+  );
 }
 
 function getBookmarkTextForRules(bookmark: BookmarkRecord): string {
@@ -329,7 +395,7 @@ export function consolidateClassification(
   }
 
   const consolidatedAssignments = assignments.map((bookmark) => {
-    if (bookmark.manualCategorySlug) {
+    if (bookmark.manualCategorySlug && !ALIAS_TO_CANONICAL.has(bookmark.manualCategorySlug)) {
       return bookmark;
     }
 
@@ -341,10 +407,11 @@ export function consolidateClassification(
     const canonicalCategory = makeCategory(canonicalSlug);
     categoryMap.set(canonicalSlug, canonicalCategory);
 
-    if (
-      bookmark.categorySlug === canonicalCategory.slug &&
-      bookmark.categoryName === canonicalCategory.name
-    ) {
+    const effectiveSlug = bookmark.manualCategorySlug ?? bookmark.categorySlug;
+    const sameCategory =
+      effectiveSlug === canonicalCategory.slug && bookmark.categoryName === canonicalCategory.name;
+
+    if (sameCategory) {
       return bookmark;
     }
 
@@ -352,8 +419,9 @@ export function consolidateClassification(
 
     return {
       ...bookmark,
-      categorySlug: canonicalCategory.slug,
+      categorySlug: bookmark.manualCategorySlug ? bookmark.categorySlug : canonicalCategory.slug,
       categoryName: canonicalCategory.name,
+      manualCategorySlug: bookmark.manualCategorySlug ? canonicalCategory.slug : bookmark.manualCategorySlug,
       categoryReason: mergeConsolidationReason(bookmark.categoryReason, canonicalCategory.name),
       updatedAt: new Date().toISOString(),
     };

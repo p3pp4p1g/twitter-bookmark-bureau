@@ -28,6 +28,7 @@ export async function runCategoryConsolidation(
   const changedAssignments: BookmarkRecord[] = result.assignments.filter((assignment, index) => {
     const original = bookmarks[index];
     return (
+      assignment.manualCategorySlug !== original.manualCategorySlug ||
       assignment.categorySlug !== original.categorySlug ||
       assignment.categoryName !== original.categoryName
     );
