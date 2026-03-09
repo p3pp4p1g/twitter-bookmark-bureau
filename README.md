@@ -115,6 +115,19 @@ This repo is original code, but these projects informed the approach:
 5. It mirrors missing media
 6. It sends Telegram notifications only on relevant state changes
 
+### Historical Recovery / Phase 3
+
+When a manual export missed older bookmarks, use the historical backfill flow.
+
+It:
+
+- walks the X bookmark timeline past already-known pages
+- imports only missing older bookmarks
+- falls back to smaller chunks and single-item import when the Worker returns transient `500`
+- can import a single problematic bookmark without immediate classification, then classify it later
+- reconciles missing media after each pass
+- supports repeated passes until the archive stabilizes
+
 ## Security Model
 
 - no X username/password is stored
@@ -277,10 +290,28 @@ Run once manually:
 npm run agent:daily
 ```
 
+Run historical backfill once:
+
+```bash
+npm run agent:history
+```
+
+Run media backlog reconciliation only:
+
+```bash
+npm run agent:media
+```
+
 Install the WSL cron:
 
 ```bash
 npm run agent:cron:install
+```
+
+Run the historical loop until stabilization:
+
+```bash
+bash scripts/run-history-until-stable.sh
 ```
 
 ## Admin Endpoints
@@ -308,6 +339,18 @@ It only sends messages when something relevant changes, such as:
 - X endpoint changed or failed
 - sync recovered
 - media backlog milestone reached during initial backfill
+
+## Resilience Notes
+
+The current sync flow includes a few pragmatic safeguards:
+
+- retries for transient X endpoint failures such as `Timeout` and `Dependency: Unspecified`
+- historical backfill that keeps going even when already-known pages appear first
+- recursive chunk splitting when the Worker fails on a big import batch
+- single-item fallback import without immediate classification for pathological cases
+- separate pending-classification pass
+- separate media-only reconciliation pass
+- background runner to repeat historical passes until the archive stabilizes
 
 ## Frontend
 

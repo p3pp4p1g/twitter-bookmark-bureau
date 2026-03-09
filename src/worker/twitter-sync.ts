@@ -112,6 +112,17 @@ function sleep(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+function getPayloadErrorMessages(payload: Record<string, unknown>) {
+  const errors = Array.isArray(payload.errors) ? payload.errors : [];
+  return errors
+    .map((item) => asRecord(item)?.message)
+    .filter((value): value is string => typeof value === "string");
+}
+
+function isRetriablePayloadError(message: string) {
+  return /timeout|dependency/i.test(message);
+}
+
 function unwrapTweetUnion(value: unknown): Record<string, unknown> | undefined {
   const record = asRecord(value);
   if (!record) {
@@ -200,39 +211,47 @@ async function fetchBookmarksPage(
     "x-twitter-client-language": "en",
   });
 
-  let response: Response | undefined;
+  let payload: Record<string, unknown> | undefined;
   let lastError = "";
 
   for (let attempt = 0; attempt < 3; attempt += 1) {
-    response = await fetch(url.toString(), {
+    const response = await fetch(url.toString(), {
       method: "GET",
       headers,
     });
 
-    if (response.ok) {
+    if (!response.ok) {
+      lastError = await response.text();
+      if (response.status !== 429 && response.status < 500) {
+        break;
+      }
+
+      await sleep(1500 * (attempt + 1));
+      continue;
+    }
+
+    payload = (await response.json()) as Record<string, unknown>;
+    const errorMessages = getPayloadErrorMessages(payload);
+    if (!errorMessages.length) {
       break;
     }
 
-    lastError = await response.text();
-    if (response.status !== 429 && response.status < 500) {
+    lastError = `X bookmarks response contained errors: ${errorMessages.join("; ") || "unknown error"}`;
+    if (!errorMessages.every((message) => isRetriablePayloadError(message))) {
       break;
     }
 
+    payload = undefined;
     await sleep(1500 * (attempt + 1));
   }
 
-  if (!response?.ok) {
-    throw new Error(`X bookmarks request failed: ${response?.status ?? 0} ${lastError}`);
+  if (!payload) {
+    throw new Error(lastError || "X bookmarks request failed");
   }
 
-  const payload = (await response.json()) as Record<string, unknown>;
-  const errors = Array.isArray(payload.errors) ? payload.errors : [];
-  if (errors.length) {
-    const message = errors
-      .map((item) => asRecord(item)?.message)
-      .filter((value): value is string => typeof value === "string")
-      .join("; ");
-    throw new Error(`X bookmarks response contained errors: ${message || "unknown error"}`);
+  const errorMessages = getPayloadErrorMessages(payload);
+  if (errorMessages.length) {
+    throw new Error(`X bookmarks response contained errors: ${errorMessages.join("; ") || "unknown error"}`);
   }
 
   const rawTweets = extractTimelineTweets(payload);
