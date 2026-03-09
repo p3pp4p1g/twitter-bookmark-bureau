@@ -12,7 +12,6 @@ import {
 } from "./auth";
 import { renderAppShell } from "./templates";
 import {
-  getMediaAssetByHash,
   getOpsStatus,
   getBookmarksForClassification,
   getOverview,
@@ -23,8 +22,6 @@ import {
   recordAlertEvent,
   recordImportRun,
   saveManualCategory,
-  syncMirroredMediaIntoBookmark,
-  upsertMediaAsset,
   upsertBookmarks,
   upsertCategories,
 } from "./db";
@@ -42,7 +39,13 @@ import {
   syncTriggerRequestSchema,
 } from "../shared/schema";
 import { runCategoryConsolidation } from "./consolidation";
-import { handleScheduledTwitterSync, runTwitterBookmarksSync, TWITTER_BOOKMARKS_SOURCE } from "./twitter-sync";
+import { storeMirroredMedia } from "./media-sync";
+import {
+  handleScheduledTwitterSync,
+  runScheduledTwitterSync,
+  runTwitterBookmarksSync,
+  TWITTER_BOOKMARKS_SOURCE,
+} from "./twitter-sync";
 const app = new Hono<{ Bindings: Env }>();
 
 app.use("*", siteGate);
@@ -299,11 +302,6 @@ app.post("/api/admin/media/upload", async (c) => {
     return authError;
   }
 
-  const bucket = c.env.MEDIA_BUCKET ?? c.env.RAW_BOOKMARKS;
-  if (!bucket) {
-    return c.json({ ok: false, error: "Media bucket is not configured" }, 503);
-  }
-
   const form = await c.req.formData();
   const file = form.get("file");
   const bookmarkId = String(form.get("bookmarkId") ?? "");
@@ -320,31 +318,7 @@ app.post("/api/admin/media/upload", async (c) => {
     return c.json({ ok: false, error: "Missing required media upload fields" }, 400);
   }
 
-  const existingByHash = contentHash ? await getMediaAssetByHash(c.env.DB, contentHash) : null;
-  const extension =
-    mimeType?.includes("png")
-      ? "png"
-      : mimeType?.includes("gif")
-        ? "gif"
-        : mimeType?.includes("webp")
-          ? "webp"
-          : mimeType?.includes("mp4")
-            ? "mp4"
-            : "jpg";
-  const r2Key =
-    existingByHash?.r2_key && typeof existingByHash.r2_key === "string"
-      ? existingByHash.r2_key
-      : `media/${contentHash ?? `${bookmarkId}-${mediaId}`}.${extension}`;
-
-  if (!existingByHash?.r2_key) {
-    await bucket.put(r2Key, await file.arrayBuffer(), {
-      httpMetadata: {
-        contentType: mimeType ?? (file.type || undefined),
-      },
-    });
-  }
-
-  const asset = {
+  const result = await storeMirroredMedia(c.env, {
     bookmarkId,
     mediaId,
     sourceUrl,
@@ -354,15 +328,10 @@ app.post("/api/admin/media/upload", async (c) => {
     contentHash,
     mimeType: mimeType ?? (file.type || undefined),
     sizeBytes: sizeBytes ?? file.size,
-    r2Key,
-    status: "uploaded" as const,
-    attemptCount: 1,
-  };
+    buffer: await file.arrayBuffer(),
+  });
 
-  await upsertMediaAsset(c.env.DB, asset);
-  await syncMirroredMediaIntoBookmark(c.env.DB, asset);
-
-  return c.json({ ok: true, r2Key, mirroredUrl: `/api/media/${r2Key}` });
+  return c.json({ ok: true, ...result });
 });
 
 app.post("/api/admin/sync", async (c) => {
@@ -386,6 +355,23 @@ app.post("/api/admin/sync", async (c) => {
     const message = error instanceof Error ? error.message : "Sync failed";
     const status = /not configured/i.test(message) ? 503 : 500;
     return c.json({ ok: false, error: message }, status);
+  }
+});
+
+app.post("/api/admin/sync/daily", async (c) => {
+  const authError = await requireAdminAccess(c);
+  if (authError) {
+    return authError;
+  }
+
+  try {
+    await runScheduledTwitterSync(c.env);
+    return c.json({ ok: true });
+  } catch (error) {
+    return c.json(
+      { ok: false, error: error instanceof Error ? error.message : String(error) },
+      500,
+    );
   }
 });
 

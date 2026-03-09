@@ -1,6 +1,7 @@
 import { normalizeBookmarks, type BookmarkRecord } from "../shared/schema";
 import {
   findExistingBookmarkIds,
+  getOpsStatus,
   getSyncStatus,
   listCategories,
   markSyncFinished,
@@ -10,8 +11,10 @@ import {
   upsertCategories,
   type SyncRunStats,
 } from "./db";
+import { notifyInfo, reportAlert, resolveAlert } from "./alerts";
 import type { Env } from "./env";
 import { classifyBookmarksWithGeminiSafe } from "./gemini";
+import { reconcileBookmarkMedia } from "./media-sync";
 
 const TWITTER_BOOKMARKS_SOURCE = "twitter-web-sync";
 const TWITTER_BOOKMARKS_ENDPOINT =
@@ -50,6 +53,11 @@ type TwitterSyncOptions = {
 export type TwitterSyncResult = SyncRunStats & {
   source: string;
   nextCursor?: string;
+};
+
+type TwitterSyncDetailedResult = {
+  result: TwitterSyncResult;
+  newBookmarks: BookmarkRecord[];
 };
 
 function asRecord(value: unknown): Record<string, unknown> | undefined {
@@ -263,10 +271,10 @@ async function fetchBookmarksPage(
   };
 }
 
-export async function runTwitterBookmarksSync(
+async function runTwitterBookmarksSyncDetailed(
   env: Env,
   options: TwitterSyncOptions = {},
-): Promise<TwitterSyncResult> {
+): Promise<TwitterSyncDetailedResult> {
   if (!env.X_API_KEY) {
     throw new Error("X_API_KEY is not configured");
   }
@@ -379,9 +387,12 @@ export async function runTwitterBookmarksSync(
     });
 
     return {
-      source: TWITTER_BOOKMARKS_SOURCE,
-      nextCursor: cursor,
-      ...stats,
+      result: {
+        source: TWITTER_BOOKMARKS_SOURCE,
+        nextCursor: cursor,
+        ...stats,
+      },
+      newBookmarks,
     };
   } catch (error) {
     await markSyncFinished(env.DB, TWITTER_BOOKMARKS_SOURCE, {
@@ -392,13 +403,131 @@ export async function runTwitterBookmarksSync(
   }
 }
 
-export async function handleScheduledTwitterSync(env: Env) {
+export async function runTwitterBookmarksSync(
+  env: Env,
+  options: TwitterSyncOptions = {},
+): Promise<TwitterSyncResult> {
+  const detailed = await runTwitterBookmarksSyncDetailed(env, options);
+  return detailed.result;
+}
+
+function classifyError(error: unknown) {
+  const message = error instanceof Error ? error.message : String(error);
+  if (/401|403|auth|ct0|cookie/i.test(message)) {
+    return {
+      code: "x-session",
+      fingerprint: "x-session",
+      message: `Bookmark Bureau: sessao do X caiu. ${message}`,
+    };
+  }
+
+  if (/response contained errors|format|graphql|dependency|timeout/i.test(message)) {
+    return {
+      code: "x-format",
+      fingerprint: "x-format",
+      message: `Bookmark Bureau: resposta do X mudou ou falhou. ${message}`,
+    };
+  }
+
+  if (/media|bucket|download/i.test(message)) {
+    return {
+      code: "media-sync",
+      fingerprint: "media-sync",
+      message: `Bookmark Bureau: espelhamento de midia falhou. ${message}`,
+    };
+  }
+
+  return {
+    code: "worker-sync",
+    fingerprint: "worker-sync",
+    message: `Bookmark Bureau: sync diario do Worker falhou. ${message}`,
+  };
+}
+
+export async function runScheduledTwitterSync(env: Env) {
   if (!env.X_API_KEY) {
     console.warn("Skipping scheduled twitter sync because X_API_KEY is not configured");
     return;
   }
 
-  await runTwitterBookmarksSync(env);
+  await notifyInfo(env, "Bookmark Bureau: sync diario iniciado.");
+
+  try {
+    const { result, newBookmarks } = await runTwitterBookmarksSyncDetailed(env);
+    let mirrored = 0;
+    let failed = 0;
+
+    for (const bookmark of newBookmarks.filter((item) => item.media.length > 0)) {
+      const mediaResult = await reconcileBookmarkMedia(env, bookmark);
+      mirrored += mediaResult.mirrored;
+      failed += mediaResult.failed;
+    }
+
+    const opsStatus = await getOpsStatus(env.DB);
+
+    if (failed > 0) {
+      await reportAlert(env, {
+        code: "media-sync",
+        severity: "error",
+        fingerprint: "media-sync",
+        message: `Bookmark Bureau: espelhamento de midia falhou. falhas=${failed} pendentes=${opsStatus.media.bookmarksMissingMedia}.`,
+        metadata: {
+          mirrored,
+          failed,
+          mediaSummary: opsStatus.media,
+        },
+      });
+    } else {
+      await resolveAlert(env, {
+        code: "media-sync",
+        fingerprint: "media-sync",
+        message: `Bookmark Bureau: espelhamento de midia ok. midias=${mirrored} pendentes=${opsStatus.media.bookmarksMissingMedia}.`,
+        metadata: {
+          mirrored,
+          failed,
+          mediaSummary: opsStatus.media,
+        },
+      });
+    }
+
+    await resolveAlert(env, {
+      code: "x-session",
+      fingerprint: "x-session",
+      message: `Bookmark Bureau: sessao do X valida. sync diario ok. novos=${result.newBookmarks} midias=${mirrored}.`,
+      metadata: {
+        imported: result.newBookmarks,
+        mirrored,
+      },
+    });
+    await resolveAlert(env, {
+      code: "x-format",
+      fingerprint: "x-format",
+      message: "Bookmark Bureau: parsing do X normalizado novamente.",
+    });
+    await resolveAlert(env, {
+      code: "worker-sync",
+      fingerprint: "worker-sync",
+      message: "Bookmark Bureau: sync diario do Worker voltou ao normal.",
+    });
+
+    await notifyInfo(
+      env,
+      `Bookmark Bureau: sync concluido. novos=${result.newBookmarks} classificados=${result.classifiedBookmarks} midias=${mirrored} pendentes=${opsStatus.media.bookmarksMissingMedia} paginas=${result.fetchedPages} motivo=${result.stoppedReason}`,
+    );
+  } catch (error) {
+    const classified = classifyError(error);
+    console.error(classified.message);
+    await reportAlert(env, {
+      code: classified.code,
+      severity: "error",
+      fingerprint: classified.fingerprint,
+      message: classified.message,
+    });
+  }
+}
+
+export async function handleScheduledTwitterSync(env: Env) {
+  await runScheduledTwitterSync(env);
 }
 
 export { TWITTER_BOOKMARKS_SOURCE };

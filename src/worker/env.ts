@@ -10,6 +10,8 @@ export type Env = {
   RAW_BOOKMARKS?: R2Bucket;
   SESSION_SECRET?: string;
   SITE_PSK?: string;
+  TELEGRAM_BOT_API?: string;
+  TELEGRAM_CHAT_ID?: string;
   X_API_KEY?: string;
 };
 
