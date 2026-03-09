@@ -48,6 +48,28 @@ import {
 } from "./twitter-sync";
 const app = new Hono<{ Bindings: Env }>();
 
+app.use("*", async (c, next) => {
+  await next();
+  c.header("X-Frame-Options", "DENY");
+  c.header("X-Content-Type-Options", "nosniff");
+  c.header("Referrer-Policy", "no-referrer");
+  c.header(
+    "Content-Security-Policy",
+    [
+      "default-src 'self'",
+      "base-uri 'self'",
+      "frame-ancestors 'none'",
+      "form-action 'self'",
+      "img-src 'self' data: https:",
+      "media-src 'self' https:",
+      "connect-src 'self'",
+      "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
+      "font-src 'self' data: https://fonts.gstatic.com",
+      "script-src 'self' 'unsafe-inline'",
+    ].join("; "),
+  );
+});
+
 app.use("*", siteGate);
 
 app.get("/api/session", async (c) => {

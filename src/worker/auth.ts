@@ -10,6 +10,10 @@ type SessionPayload = {
   iat: number;
 };
 
+function sleep(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 function base64UrlEncode(input: ArrayBuffer | string): string {
   const bytes =
     typeof input === "string" ? new TextEncoder().encode(input) : new Uint8Array(input);
@@ -147,8 +151,9 @@ export async function loginWithPsk(c: Context<{ Bindings: Env }>) {
   }
 
   if (!body.psk || !constantTimeEquals(body.psk, c.env.SITE_PSK)) {
+    await sleep(350);
     c.header("Cache-Control", "no-store, private");
-    return c.json({ ok: false, error: "Invalid PSK" }, 401);
+    return c.json({ ok: false, error: "Authentication failed" }, 401);
   }
 
   const now = Date.now();
@@ -196,7 +201,8 @@ export function requireIngestKey(c: Context<{ Bindings: Env }>) {
   const candidate = getIngestCredential(c);
 
   if (!candidate || !constantTimeEquals(candidate, c.env.INGEST_API_KEY)) {
-    return c.json({ error: "Invalid ingest key" }, 401);
+    c.header("Cache-Control", "no-store, private");
+    return c.json({ error: "Authentication required" }, 401);
   }
 
   return undefined;
