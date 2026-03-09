@@ -1,5 +1,5 @@
 import type { AgentConfig } from "./config";
-import type { AlertEvent, BookmarkRecord } from "../shared/schema";
+import type { AlertEvent, BookmarkRecord, CategoryRecord } from "../shared/schema";
 
 type ExportResponse = {
   items: BookmarkRecord[];
@@ -47,16 +47,15 @@ export async function fetchAllRemoteBookmarks(
   const items: BookmarkRecord[] = [];
   let offset = 0;
   const limit = 200;
+  let total = Number.POSITIVE_INFINITY;
 
-  while (true) {
+  while (offset < total) {
     const page = await fetchRemoteBookmarks(config, {
       limit,
       offset,
       needsMedia: options.needsMedia,
     });
-    if (!page.items.length) {
-      break;
-    }
+    total = page.total;
     items.push(...page.items);
     offset += limit;
   }
@@ -69,6 +68,7 @@ export async function pushBookmarks(
   payload: {
     source: string;
     bookmarks: BookmarkRecord[];
+    categories?: CategoryRecord[];
     classify?: boolean;
     stats?: Record<string, unknown>;
   },

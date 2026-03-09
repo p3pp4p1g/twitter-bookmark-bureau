@@ -87,6 +87,7 @@ export const mediaAssetSchema = z.object({
 export const agentPushEnvelopeSchema = z.object({
   source: z.string().default("agent"),
   bookmarks: z.array(bookmarkSchema),
+  categories: z.array(categorySchema).optional(),
   classify: z.boolean().default(true),
   stats: z
     .object({

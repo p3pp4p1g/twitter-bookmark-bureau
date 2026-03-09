@@ -25,6 +25,7 @@
     "agent:daily": "tsx src/agent/daily-sync.ts",
     "agent:history": "tsx src/agent/historical-backfill.ts",
     "agent:media": "tsx src/agent/reconcile-media-backlog.ts",
+    "agent:classify:uncategorized": "tsx src/agent/classify-uncategorized.ts",
     "agent:cron:install": "bash scripts/install-wsl-cron.sh",
     "agent:cleanup:media": "bash scripts/cleanup-local-media.sh"
   },

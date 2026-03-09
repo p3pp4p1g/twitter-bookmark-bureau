@@ -251,6 +251,9 @@ app.post("/api/admin/sync/push", async (c) => {
   }
 
   const payload = agentPushEnvelopeSchema.parse(await c.req.json());
+  if (payload.categories?.length) {
+    await upsertCategories(c.env.DB, payload.categories);
+  }
   await upsertBookmarks(c.env.DB, payload.bookmarks);
 
   let classificationCount = 0;
