@@ -32,7 +32,7 @@
   "dependencies": {
     "csv-parse": "^5.6.0",
     "dotenv": "^17.2.3",
-    "hono": "^4.12.5",
+    "hono": "^4.12.7",
     "react": "^19.2.0",
     "react-dom": "^19.2.0",
     "rettiwt-api": "^6.2.0",
