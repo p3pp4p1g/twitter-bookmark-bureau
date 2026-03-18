@@ -19,6 +19,33 @@ function extractJson(text: string): string {
   return trimmed;
 }
 
+function normalizeCategoryKey(name: string) {
+  return name.trim().toLowerCase();
+}
+
+function buildCategoryLookup(existingCategories: CategoryRecord[], newCategories: CategoryRecord[]) {
+  const byExactName = new Map<string, CategoryRecord>();
+  const byNormalizedName = new Map<string, CategoryRecord>();
+  const bySlug = new Map<string, CategoryRecord>();
+
+  for (const category of [...existingCategories, ...newCategories]) {
+    byExactName.set(category.name, category);
+    byNormalizedName.set(normalizeCategoryKey(category.name), category);
+    bySlug.set(category.slug, category);
+  }
+
+  return {
+    resolve(categoryName: string) {
+      const trimmed = categoryName.trim();
+      return (
+        byExactName.get(trimmed) ??
+        byNormalizedName.get(normalizeCategoryKey(trimmed)) ??
+        bySlug.get(slugifyCategoryName(trimmed))
+      );
+    },
+  };
+}
+
 export async function classifyBookmarksWithGemini(
   env: Env,
   bookmarks: BookmarkRecord[],
@@ -94,12 +121,29 @@ ${JSON.stringify(
 
   const parsed = llmResponseSchema.parse(JSON.parse(extractJson(content)));
   const categories = toCategoryRecords(parsed);
-  const categoryByName = new Map(categories.map((category) => [category.name, category]));
+  const categoryLookup = buildCategoryLookup(existingCategories, categories);
+  const assignmentsById = new Map(parsed.assignments.map((assignment) => [assignment.id, assignment]));
+  const fallbackCategories = new Map<string, CategoryRecord>();
 
   const consolidated = consolidateClassification(
     bookmarks.map((bookmark) => {
-      const assignment = parsed.assignments.find((item) => item.id === bookmark.id);
-      const category = assignment ? categoryByName.get(assignment.categoryName) : undefined;
+      const assignment = assignmentsById.get(bookmark.id);
+      const category = assignment ? categoryLookup.resolve(assignment.categoryName) : undefined;
+
+      if (!assignment || !category) {
+        if (bookmark.categorySlug || bookmark.categoryName) {
+          return {
+            ...bookmark,
+            updatedAt: new Date().toISOString(),
+          };
+        }
+
+        const fallback = fallbackNeedsReview(bookmark);
+        for (const fallbackCategory of fallback.categories) {
+          fallbackCategories.set(fallbackCategory.slug, fallbackCategory);
+        }
+        return fallback.assignments[0];
+      }
 
       return {
         ...bookmark,
@@ -111,7 +155,7 @@ ${JSON.stringify(
         updatedAt: new Date().toISOString(),
       };
     }),
-    categories,
+    [...categories, ...fallbackCategories.values()],
   );
 
   return {

@@ -128,8 +128,9 @@ This repo is original code, but these projects informed the approach:
 2. It reads recent bookmarks from X using the persisted `X_API_KEY` session cookie bundle
 3. It stops when it reaches already-known pages
 4. It imports only new bookmarks
-5. It mirrors only the new media for that daily delta
-6. It sends Telegram notifications only on relevant state changes
+5. It classifies the new bookmarks and retries any older uncategorized backlog still left in D1
+6. It mirrors only the new media for that daily delta
+7. It sends Telegram notifications only on relevant state changes
 
 ### Historical Recovery / Phase 3
 
