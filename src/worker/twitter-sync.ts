@@ -1,6 +1,7 @@
 import { normalizeBookmarks, type BookmarkRecord } from "../shared/schema";
 import {
   findExistingBookmarkIds,
+  getBookmarksForClassification,
   getOpsStatus,
   getSyncStatus,
   listCategories,
@@ -59,6 +60,9 @@ type TwitterSyncDetailedResult = {
   result: TwitterSyncResult;
   newBookmarks: BookmarkRecord[];
 };
+
+const PENDING_CLASSIFICATION_BATCH_LIMIT = 24;
+const PENDING_CLASSIFICATION_MAX_ROUNDS = 100;
 
 function asRecord(value: unknown): Record<string, unknown> | undefined {
   return typeof value === "object" && value !== null ? (value as Record<string, unknown>) : undefined;
@@ -354,6 +358,10 @@ async function runTwitterBookmarksSyncDetailed(
       classifiedBookmarks = classification.assignments.length;
     }
 
+    if (shouldClassify && env.GEMINI_API_KEY) {
+      classifiedBookmarks += await classifyPendingBookmarks(env);
+    }
+
     let snapshotKey: string | undefined;
     if (env.RAW_BOOKMARKS) {
       snapshotKey = `twitter-sync/${new Date().toISOString()}.json`;
@@ -401,6 +409,34 @@ async function runTwitterBookmarksSyncDetailed(
     });
     throw error;
   }
+}
+
+export async function classifyPendingBookmarks(
+  env: Env,
+  options: { limit?: number; maxRounds?: number } = {},
+) {
+  if (!env.GEMINI_API_KEY) {
+    return 0;
+  }
+
+  const limit = options.limit ?? PENDING_CLASSIFICATION_BATCH_LIMIT;
+  const maxRounds = options.maxRounds ?? PENDING_CLASSIFICATION_MAX_ROUNDS;
+  let totalClassified = 0;
+
+  for (let round = 0; round < maxRounds; round += 1) {
+    const bookmarks = await getBookmarksForClassification(env.DB, undefined, limit);
+    if (!bookmarks.length) {
+      return totalClassified;
+    }
+
+    const categories = await listCategories(env.DB);
+    const classification = await classifyBookmarksWithGeminiSafe(env, bookmarks, categories);
+    await upsertCategories(env.DB, classification.categories);
+    await upsertBookmarks(env.DB, classification.assignments);
+    totalClassified += classification.assignments.length;
+  }
+
+  throw new Error("Pending classification did not converge within the configured safety limit");
 }
 
 export async function runTwitterBookmarksSync(
