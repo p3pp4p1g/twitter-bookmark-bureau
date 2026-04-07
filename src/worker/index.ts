@@ -53,6 +53,14 @@ function isServiceConfigError(error: unknown) {
   return /not configured|missing the ct0 cookie|is empty/i.test(message);
 }
 
+function getMediaObjectKey(pathname: string) {
+  const key = pathname.replace(/^\/api\/media\//, "");
+  if (!key || key.startsWith("/") || !key.startsWith("media/")) {
+    return undefined;
+  }
+  return key;
+}
+
 app.use("*", async (c, next) => {
   await next();
   c.header("X-Frame-Options", "DENY");
@@ -76,6 +84,16 @@ app.use("*", async (c, next) => {
 });
 
 app.use("*", siteGate);
+
+app.use("/api/*", async (c, next) => {
+  await next();
+  if (!c.res.headers.has("Cache-Control")) {
+    c.header("Cache-Control", "no-store, private");
+  }
+  if (!c.res.headers.has("Vary")) {
+    c.header("Vary", "Cookie, Authorization, X-Ingest-Key");
+  }
+});
 
 app.get("/api/session", async (c) => {
   const protectedByPsk = Boolean(c.env.SITE_PSK);
@@ -425,7 +443,11 @@ app.get("/api/media/*", async (c) => {
   }
 
   const pathname = new URL(c.req.url).pathname;
-  const key = pathname.replace(/^\/api\/media\//, "");
+  const key = getMediaObjectKey(pathname);
+  if (!key) {
+    return c.notFound();
+  }
+
   const object = await bucket.get(key);
   if (!object) {
     return c.notFound();
@@ -433,7 +455,6 @@ app.get("/api/media/*", async (c) => {
 
   const headers = new Headers();
   object.writeHttpMetadata(headers);
-  headers.set("Cache-Control", "private, max-age=3600");
   return new Response(object.body, { headers });
 });
 

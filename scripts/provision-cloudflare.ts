@@ -1,6 +1,7 @@
 import { execFile, spawn } from "node:child_process";
 import { promisify } from "node:util";
 import fs from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import { config as loadDotenv } from "dotenv";
 
@@ -21,9 +22,10 @@ type R2Bucket = {
   name: string;
 };
 
-async function runWrangler(args: string[], stdin?: string) {
+async function runWrangler(args: string[], stdin?: string, configPath?: string) {
+  const wranglerArgs = configPath ? ["wrangler", "--config", configPath, ...args] : ["wrangler", ...args];
   if (stdin === undefined) {
-    return execFileAsync("npx", ["wrangler", ...args], {
+    return execFileAsync("npx", wranglerArgs, {
       cwd,
       encoding: "utf8",
       maxBuffer: 1024 * 1024 * 8,
@@ -31,7 +33,7 @@ async function runWrangler(args: string[], stdin?: string) {
   }
 
   return new Promise<{ stdout: string; stderr: string }>((resolve, reject) => {
-    const child = spawn("npx", ["wrangler", ...args], {
+    const child = spawn("npx", wranglerArgs, {
       cwd,
       stdio: ["pipe", "pipe", "pipe"],
     });
@@ -133,13 +135,13 @@ async function findR2Bucket(accountId: string, name: string) {
   return buckets.find((bucket) => bucket.name === name);
 }
 
-async function maybePutSecret(name: string) {
+async function maybePutSecret(name: string, configPath: string) {
   const value = process.env[name];
   if (!value) {
     return false;
   }
 
-  await runWrangler(["secret", "put", name], value);
+  await runWrangler(["secret", "put", name], value, configPath);
   return true;
 }
 
@@ -172,38 +174,39 @@ async function main() {
 
   const originalToml = await fs.readFile(wranglerConfig, "utf8");
   const patchedToml = patchToml(originalToml, databaseId, bucketName);
-  await fs.writeFile(wranglerConfig, patchedToml, "utf8");
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "bookmark-bureau-cf-"));
+  const tempWranglerConfig = path.join(tempDir, "wrangler.toml");
 
-  const migrated = await runWrangler(["d1", "migrations", "apply", d1Name, "--remote"]);
+  await fs.writeFile(tempWranglerConfig, patchedToml, "utf8");
 
-  const secrets = await Promise.all([
-    maybePutSecret("SITE_PSK"),
-    maybePutSecret("SESSION_SECRET"),
-    maybePutSecret("INGEST_API_KEY"),
-    maybePutSecret("GEMINI_API_KEY"),
-    maybePutSecret("X_API_KEY"),
-  ]);
+  try {
+    await runWrangler(["d1", "migrations", "apply", d1Name, "--remote"], undefined, tempWranglerConfig);
 
-  console.log(
-    JSON.stringify(
-      {
-        ok: true,
-        d1Name,
-        databaseId,
-        bucketName,
-        secretsUploaded: {
-          SITE_PSK: secrets[0],
-          SESSION_SECRET: secrets[1],
-          INGEST_API_KEY: secrets[2],
-          GEMINI_API_KEY: secrets[3],
-          X_API_KEY: secrets[4],
+    const secrets = await Promise.all([
+      maybePutSecret("SITE_PSK", tempWranglerConfig),
+      maybePutSecret("SESSION_SECRET", tempWranglerConfig),
+      maybePutSecret("INGEST_API_KEY", tempWranglerConfig),
+      maybePutSecret("GEMINI_API_KEY", tempWranglerConfig),
+      maybePutSecret("X_API_KEY", tempWranglerConfig),
+    ]);
+
+    console.log(
+      JSON.stringify(
+        {
+          ok: true,
+          d1Name,
+          databaseId,
+          bucketName,
+          uploadedSecretCount: secrets.filter(Boolean).length,
+          migrationApplied: true,
         },
-        migrationOutput: migrated.stdout.trim(),
-      },
-      null,
-      2,
-    ),
-  );
+        null,
+        2,
+      ),
+    );
+  } finally {
+    await fs.rm(tempDir, { recursive: true, force: true });
+  }
 }
 
 main().catch((error) => {
