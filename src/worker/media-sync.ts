@@ -224,6 +224,20 @@ export async function reconcileBookmarkMedia(
       mirrored += 1;
     } catch (error) {
       console.warn(`Media reconcile failed for ${bookmark.id}/${media.id}`, error);
+      const message = error instanceof Error ? error.message : String(error);
+      const failedAsset = {
+        bookmarkId: bookmark.id,
+        mediaId: media.id,
+        sourceUrl: media.url,
+        normalizedUrl: source.normalizedUrl,
+        thumbnailUrl: media.thumbnailUrl,
+        mediaType: source.mediaType,
+        status: "failed" as const,
+        lastError: message,
+        attemptCount: 1,
+      };
+      await upsertMediaAsset(env.DB, failedAsset);
+      await syncMirroredMediaIntoBookmark(env.DB, failedAsset);
       failed += 1;
     }
   }

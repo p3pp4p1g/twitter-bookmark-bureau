@@ -355,6 +355,31 @@ All admin endpoints require `INGEST_API_KEY`.
 - `POST /api/admin/sync`
 - `POST /api/admin/sync/daily`
 
+## Status And Monitoring
+
+The app now exposes two monitoring surfaces:
+
+- `GET /api/status`
+  - protected by the normal site session
+  - returns the detailed internal status snapshot used by the UI status board
+  - includes sync freshness, import consistency, unsorted backlog, media backlog, and active alerts
+- `GET /api/healthz`
+  - public and intentionally minimal
+  - returns `200` when the service is healthy or degraded
+  - returns `503` when the health checks detect a failing state
+  - safe for external uptime monitors because it does not expose bookmark content
+
+Recommended monitoring setup:
+
+1. Use Telegram notifications from the Worker for state changes that happen during a sync run.
+2. Add an external monitor such as Better Stack, UptimeRobot, or a lightweight GitHub Actions job to poll `https://<your-worker>.workers.dev/api/healthz`.
+3. Alert when `/api/healthz` returns `503` or when the monitor itself stops receiving a successful heartbeat on schedule.
+
+Why both:
+
+- Telegram covers in-band runtime failures when the Worker actually executes.
+- an external monitor covers dead-man-switch scenarios such as cron not firing, deployment regressions, or the Worker becoming unreachable.
+
 ## Telegram Notifications
 
 The bot is intentionally quiet.

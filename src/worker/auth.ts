@@ -118,6 +118,7 @@ export const siteGate: MiddlewareHandler<{ Bindings: Env }> = async (c, next) =>
     !path.startsWith("/api/auth/login") &&
     !path.startsWith("/api/auth/logout") &&
     !path.startsWith("/api/admin/") &&
+    !path.startsWith("/api/healthz") &&
     path !== "/bookmark.png" &&
     path !== "/favicon.ico";
 

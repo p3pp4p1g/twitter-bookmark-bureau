@@ -12,9 +12,11 @@ import {
 } from "./auth";
 import { renderAppShell } from "./templates";
 import {
-  getOpsStatus,
   getBookmarksForClassification,
+  getOpsStatus,
   getOverview,
+  getPublicHealth,
+  getStatusSnapshot,
   getSyncStatus,
   listBookmarks,
   listBookmarksForAgent,
@@ -97,28 +99,13 @@ app.use("/api/*", async (c, next) => {
 
 app.get("/api/session", async (c) => {
   const protectedByPsk = Boolean(c.env.SITE_PSK);
-  const [overview, syncStatus] = await Promise.all([
-    getOverview(c.env.DB).catch(() => ({
-      bookmarkCount: 0,
-      categoryCount: 0,
-      uncategorizedCount: 0,
-      latestImportAt: undefined,
-    })),
-    getSyncStatus(c.env.DB, TWITTER_BOOKMARKS_SOURCE).catch(() => ({
-      source: TWITTER_BOOKMARKS_SOURCE,
-      status: "idle" as const,
-    })),
-  ]);
-
-  const opsStatus = await getOpsStatus(c.env.DB).catch(() => ({
-    media: {
-      totalAssets: 0,
-      uploadedAssets: 0,
-      pendingAssets: 0,
-      failedAssets: 0,
-      bookmarksMissingMedia: 0,
-    },
-    activeAlerts: [],
+  const overview = await getOverview(c.env.DB).catch(() => ({
+    bookmarkCount: 0,
+    categoryCount: 0,
+    uncategorizedCount: 0,
+    latestImportRunAt: undefined,
+    latestBookmarkImportedAt: undefined,
+    latestBookmarkCreatedAt: undefined,
   }));
 
   return c.json({
@@ -129,8 +116,6 @@ app.get("/api/session", async (c) => {
     hasIngestKey: Boolean(c.env.INGEST_API_KEY),
     hasTwitterSyncAuth: Boolean(c.env.X_API_KEY),
     overview,
-    syncStatus,
-    opsStatus,
   });
 });
 
@@ -183,6 +168,20 @@ app.get("/api/sync/status", async (c) => {
   }
 
   return c.json(await getSyncStatus(c.env.DB, TWITTER_BOOKMARKS_SOURCE));
+});
+
+app.get("/api/status", async (c) => {
+  const authError = await requireSiteSession(c);
+  if (authError) {
+    return authError;
+  }
+
+  return c.json(await getStatusSnapshot(c.env.DB, TWITTER_BOOKMARKS_SOURCE));
+});
+
+app.get("/api/healthz", async (c) => {
+  const health = await getPublicHealth(c.env.DB, TWITTER_BOOKMARKS_SOURCE);
+  return c.json(health, health.ok ? 200 : 503);
 });
 
 app.get("/api/admin/bookmarks/export", async (c) => {

@@ -54,7 +54,9 @@ type Overview = {
   bookmarkCount: number;
   categoryCount: number;
   uncategorizedCount: number;
-  latestImportAt?: string;
+  latestImportRunAt?: string;
+  latestBookmarkImportedAt?: string;
+  latestBookmarkCreatedAt?: string;
 };
 
 export type SyncRunStats = {
@@ -101,6 +103,32 @@ export type AlertEventView = {
 export type OpsStatusView = {
   media: MediaBacklogSummary;
   activeAlerts: AlertEventView[];
+};
+
+export type HealthStatus = "healthy" | "warning" | "error";
+
+export type HealthCheckView = {
+  key: string;
+  label: string;
+  status: HealthStatus;
+  summary: string;
+  observedAt: string;
+};
+
+export type StatusSnapshotView = {
+  checkedAt: string;
+  overview: Overview;
+  syncStatus: SyncStatusView;
+  opsStatus: OpsStatusView;
+  checks: HealthCheckView[];
+  overallStatus: HealthStatus;
+};
+
+export type PublicHealthView = {
+  ok: boolean;
+  status: HealthStatus;
+  checkedAt: string;
+  lastSuccessAt?: string;
 };
 
 function rowToBookmarkRecord(row: Record<string, unknown>): BookmarkRecord {
@@ -251,7 +279,7 @@ export async function listCategories(db: D1Database): Promise<CategoryRow[]> {
 }
 
 export async function getOverview(db: D1Database): Promise<Overview> {
-  const [bookmarkCount, categoryCount, uncategorizedCount, latestImport] = await db.batch([
+  const [bookmarkCount, categoryCount, uncategorizedCount, latestImportRun, latestBookmarkImported, latestBookmarkCreated] = await db.batch([
     db.prepare("SELECT COUNT(*) AS count FROM bookmarks"),
     db.prepare(
       `
@@ -269,6 +297,8 @@ export async function getOverview(db: D1Database): Promise<Overview> {
       "SELECT COUNT(*) AS count FROM bookmarks WHERE COALESCE(manual_category_slug, category_slug) IS NULL",
     ),
     db.prepare("SELECT MAX(created_at) AS latest_import FROM import_runs"),
+    db.prepare("SELECT MAX(imported_at) AS latest_bookmark_imported FROM bookmarks"),
+    db.prepare("SELECT MAX(created_at) AS latest_bookmark_created FROM bookmarks"),
   ]);
 
   return {
@@ -277,8 +307,14 @@ export async function getOverview(db: D1Database): Promise<Overview> {
     uncategorizedCount: Number(
       (uncategorizedCount.results?.[0] as Record<string, unknown>)?.count ?? 0,
     ),
-    latestImportAt:
-      ((latestImport.results?.[0] as Record<string, unknown>)?.latest_import as string | null) ??
+    latestImportRunAt:
+      ((latestImportRun.results?.[0] as Record<string, unknown>)?.latest_import as string | null) ??
+      undefined,
+    latestBookmarkImportedAt:
+      ((latestBookmarkImported.results?.[0] as Record<string, unknown>)?.latest_bookmark_imported as string | null) ??
+      undefined,
+    latestBookmarkCreatedAt:
+      ((latestBookmarkCreated.results?.[0] as Record<string, unknown>)?.latest_bookmark_created as string | null) ??
       undefined,
   };
 }
@@ -763,7 +799,7 @@ export async function getMediaAssetByHash(db: D1Database, contentHash: string) {
 }
 
 export async function getMediaBacklogSummary(db: D1Database): Promise<MediaBacklogSummary> {
-  const [totalsRow, missingRow] = await Promise.all([
+  const [totalsRow, missingByStatusRow, missingWithoutAssetsRow] = await Promise.all([
     db
       .prepare(
         `
@@ -777,21 +813,199 @@ export async function getMediaBacklogSummary(db: D1Database): Promise<MediaBackl
       )
       .first<Record<string, unknown>>(),
     db
-      .prepare("SELECT id, media_json FROM bookmarks WHERE has_media = 1")
-      .all<Record<string, unknown>>(),
+      .prepare(
+        `
+          SELECT COUNT(DISTINCT bookmark_id) AS count
+          FROM media_assets
+          WHERE status != 'uploaded'
+        `,
+      )
+      .first<Record<string, unknown>>(),
+    db
+      .prepare(
+        `
+          SELECT COUNT(*) AS count
+          FROM bookmarks b
+          WHERE b.has_media = 1
+            AND NOT EXISTS (
+              SELECT 1
+              FROM media_assets ma
+              WHERE ma.bookmark_id = b.id
+            )
+        `,
+      )
+      .first<Record<string, unknown>>(),
   ]);
-
-  const bookmarksMissingMedia = (missingRow.results ?? []).reduce((count, row) => {
-    const media = parseMediaJson(row);
-    return count + (hasUnmirroredMedia(media) ? 1 : 0);
-  }, 0);
 
   return {
     totalAssets: Number(totalsRow?.total_assets ?? 0),
     uploadedAssets: Number(totalsRow?.uploaded_assets ?? 0),
     pendingAssets: Number(totalsRow?.pending_assets ?? 0),
     failedAssets: Number(totalsRow?.failed_assets ?? 0),
-    bookmarksMissingMedia,
+    bookmarksMissingMedia:
+      Number(missingByStatusRow?.count ?? 0) + Number(missingWithoutAssetsRow?.count ?? 0),
+  };
+}
+
+function getHoursSince(timestamp: string, now: number) {
+  return (now - new Date(timestamp).getTime()) / (1000 * 60 * 60);
+}
+
+function deriveHealthChecks(
+  overview: Overview,
+  syncStatus: SyncStatusView,
+  opsStatus: OpsStatusView,
+  checkedAt: string,
+): HealthCheckView[] {
+  const checks: HealthCheckView[] = [];
+  const now = new Date(checkedAt).getTime();
+
+  if (!syncStatus.lastSuccessAt) {
+    checks.push({
+      key: "sync-freshness",
+      label: "Daily sync",
+      status: "error",
+      summary: "No successful Worker sync has been recorded yet.",
+      observedAt: checkedAt,
+    });
+  } else {
+    const hoursSinceSuccess = getHoursSince(syncStatus.lastSuccessAt, now);
+    const syncErroredRecently =
+      syncStatus.status === "error" && syncStatus.lastAttemptAt === syncStatus.updatedAt;
+    const status =
+      syncErroredRecently || hoursSinceSuccess > 48
+        ? "error"
+        : hoursSinceSuccess > 30 || syncStatus.status === "running"
+          ? "warning"
+          : "healthy";
+
+    checks.push({
+      key: "sync-freshness",
+      label: "Daily sync",
+      status,
+      summary:
+        syncStatus.status === "running"
+          ? `A sync run is in progress. Last success was ${hoursSinceSuccess.toFixed(1)}h ago.`
+          : syncStatus.status === "error" && syncStatus.lastError
+            ? `Last sync attempt failed. ${syncStatus.lastError}`
+            : `Last successful sync was ${hoursSinceSuccess.toFixed(1)}h ago.`,
+      observedAt: checkedAt,
+    });
+  }
+
+  const importGapMs =
+    overview.latestBookmarkImportedAt && syncStatus.lastSuccessAt
+      ? new Date(overview.latestBookmarkImportedAt).getTime() - new Date(syncStatus.lastSuccessAt).getTime()
+      : 0;
+  checks.push({
+    key: "import-consistency",
+    label: "Import bookkeeping",
+    status: importGapMs > 5 * 60 * 1000 ? "warning" : "healthy",
+    summary:
+      importGapMs > 5 * 60 * 1000
+        ? "Bookmarks were ingested after the last completed sync. A run may have failed after persisting data."
+        : "Import timestamps and sync completion look consistent.",
+    observedAt: checkedAt,
+  });
+
+  checks.push({
+    key: "classification-backlog",
+    label: "Classification backlog",
+    status:
+      overview.uncategorizedCount > 10
+        ? "error"
+        : overview.uncategorizedCount > 0
+          ? "warning"
+          : "healthy",
+    summary:
+      overview.uncategorizedCount > 0
+        ? `${overview.uncategorizedCount} bookmark(s) remain unsorted.`
+        : "No unsorted bookmarks remain.",
+    observedAt: checkedAt,
+  });
+
+  checks.push({
+    key: "media-backlog",
+    label: "Media mirror",
+    status:
+      opsStatus.media.failedAssets > 0
+        ? "error"
+        : opsStatus.media.bookmarksMissingMedia > 0 || opsStatus.media.pendingAssets > 0
+          ? "warning"
+          : "healthy",
+    summary:
+      opsStatus.media.failedAssets > 0
+        ? `${opsStatus.media.failedAssets} media asset(s) failed to mirror.`
+        : opsStatus.media.bookmarksMissingMedia > 0 || opsStatus.media.pendingAssets > 0
+          ? `${opsStatus.media.bookmarksMissingMedia} bookmark(s) still need mirrored media.`
+          : "Media mirror backlog is empty.",
+    observedAt: checkedAt,
+  });
+
+  const errorAlerts = opsStatus.activeAlerts.filter((item) => item.severity === "error");
+  checks.push({
+    key: "alerts",
+    label: "Active alerts",
+    status:
+      errorAlerts.length > 0
+        ? "error"
+        : opsStatus.activeAlerts.length > 0
+          ? "warning"
+          : "healthy",
+    summary:
+      errorAlerts.length > 0
+        ? `${errorAlerts.length} unresolved error alert(s) need attention.`
+        : opsStatus.activeAlerts.length > 0
+          ? `${opsStatus.activeAlerts.length} alert(s) are still active.`
+          : "No active alerts.",
+    observedAt: checkedAt,
+  });
+
+  return checks;
+}
+
+function getOverallStatus(checks: HealthCheckView[]): HealthStatus {
+  if (checks.some((check) => check.status === "error")) {
+    return "error";
+  }
+  if (checks.some((check) => check.status === "warning")) {
+    return "warning";
+  }
+  return "healthy";
+}
+
+export async function getStatusSnapshot(
+  db: D1Database,
+  source: string,
+): Promise<StatusSnapshotView> {
+  const checkedAt = new Date().toISOString();
+  const [overview, syncStatus, opsStatus] = await Promise.all([
+    getOverview(db),
+    getSyncStatus(db, source),
+    getOpsStatus(db),
+  ]);
+  const checks = deriveHealthChecks(overview, syncStatus, opsStatus, checkedAt);
+
+  return {
+    checkedAt,
+    overview,
+    syncStatus,
+    opsStatus,
+    checks,
+    overallStatus: getOverallStatus(checks),
+  };
+}
+
+export async function getPublicHealth(
+  db: D1Database,
+  source: string,
+): Promise<PublicHealthView> {
+  const snapshot = await getStatusSnapshot(db, source);
+  return {
+    ok: snapshot.overallStatus !== "error",
+    status: snapshot.overallStatus,
+    checkedAt: snapshot.checkedAt,
+    lastSuccessAt: snapshot.syncStatus.lastSuccessAt,
   };
 }
 

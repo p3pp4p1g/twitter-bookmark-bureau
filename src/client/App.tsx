@@ -12,7 +12,9 @@ type Overview = {
   bookmarkCount: number;
   categoryCount: number;
   uncategorizedCount: number;
-  latestImportAt?: string;
+  latestImportRunAt?: string;
+  latestBookmarkImportedAt?: string;
+  latestBookmarkCreatedAt?: string;
 };
 
 type SessionPayload = {
@@ -23,21 +25,6 @@ type SessionPayload = {
   hasIngestKey: boolean;
   hasTwitterSyncAuth: boolean;
   overview: Overview;
-  syncStatus: SyncStatus;
-  opsStatus: {
-    media: {
-      totalAssets: number;
-      uploadedAssets: number;
-      pendingAssets: number;
-      failedAssets: number;
-      bookmarksMissingMedia: number;
-    };
-    activeAlerts: Array<{
-      code: string;
-      severity: "info" | "warning" | "error";
-      message: string;
-    }>;
-  };
 };
 
 type Category = {
@@ -96,6 +83,36 @@ type SyncStatus = {
   updatedAt?: string;
 };
 
+type HealthStatus = "healthy" | "warning" | "error";
+
+type StatusSnapshot = {
+  checkedAt: string;
+  overview: Overview;
+  syncStatus: SyncStatus;
+  opsStatus: {
+    media: {
+      totalAssets: number;
+      uploadedAssets: number;
+      pendingAssets: number;
+      failedAssets: number;
+      bookmarksMissingMedia: number;
+    };
+    activeAlerts: Array<{
+      code: string;
+      severity: "info" | "warning" | "error";
+      message: string;
+    }>;
+  };
+  checks: Array<{
+    key: string;
+    label: string;
+    status: HealthStatus;
+    summary: string;
+    observedAt: string;
+  }>;
+  overallStatus: HealthStatus;
+};
+
 const BOOKMARK_PREVIEW_LENGTH = 343;
 
 async function fetchJson<T>(input: string, init?: RequestInit): Promise<T> {
@@ -140,6 +157,41 @@ function formatSyncState(status?: SyncStatus["status"]) {
       return "Needs attention";
     default:
       return "Idle";
+  }
+}
+
+function formatHealthState(status?: HealthStatus) {
+  switch (status) {
+    case "warning":
+      return "Watch";
+    case "error":
+      return "Failing";
+    default:
+      return "Healthy";
+  }
+}
+
+function syncStatusPillClass(status?: SyncStatus["status"]) {
+  switch (status) {
+    case "running":
+      return "status-pill status-pill--running";
+    case "success":
+      return "status-pill status-pill--success";
+    case "error":
+      return "status-pill status-pill--error";
+    default:
+      return "status-pill status-pill--idle";
+  }
+}
+
+function healthStatusPillClass(status?: HealthStatus) {
+  switch (status) {
+    case "warning":
+      return "status-pill status-pill--warning";
+    case "error":
+      return "status-pill status-pill--error";
+    default:
+      return "status-pill status-pill--success";
   }
 }
 
@@ -338,20 +390,25 @@ function BookmarkCard({
 export default function App() {
   const PAGE_SIZE = 21;
   const [session, setSession] = useState<SessionPayload | null>(null);
+  const [statusSnapshot, setStatusSnapshot] = useState<StatusSnapshot | null>(null);
   const [categories, setCategories] = useState<Category[]>([]);
   const [bookmarks, setBookmarks] = useState<Bookmark[]>([]);
   const [query, setQuery] = useState("");
   const [selectedCategory, setSelectedCategory] = useState<string>("");
   const [mediaFilter, setMediaFilter] = useState<"all" | "only" | "none">("all");
-  const [loading, setLoading] = useState(true);
+  const [initializing, setInitializing] = useState(true);
+  const [loading, setLoading] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
+  const [statusLoading, setStatusLoading] = useState(false);
   const [hasMore, setHasMore] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [statusError, setStatusError] = useState<string | null>(null);
   const [expandedBookmarks, setExpandedBookmarks] = useState<Record<string, boolean>>({});
 
   const deferredQuery = useDeferredValue(query);
   const sentinelRef = useRef<HTMLDivElement | null>(null);
   const requestKeyRef = useRef("");
+  const sessionReady = Boolean(session);
 
   function buildBookmarkParams(offset = 0, limit = PAGE_SIZE) {
     const params = new URLSearchParams();
@@ -369,7 +426,66 @@ export default function App() {
     return params;
   }
 
+  async function loadMeta(options: { quiet?: boolean } = {}) {
+    if (!options.quiet) {
+      setInitializing(true);
+    }
+    setError(null);
+
+    try {
+      const [sessionPayload, categoriesPayload] = await Promise.all([
+        fetchJson<SessionPayload>("/api/session"),
+        fetchJson<{ items: Category[] }>("/api/categories"),
+      ]);
+
+      setSession(sessionPayload);
+      setCategories(categoriesPayload.items);
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : "Failed to load archive");
+    } finally {
+      if (!options.quiet) {
+        setInitializing(false);
+      }
+    }
+  }
+
+  useEffect(() => {
+    void loadMeta();
+  }, []);
+
+  async function loadStatus() {
+    setStatusLoading(true);
+    setStatusError(null);
+
+    try {
+      const snapshot = await fetchJson<StatusSnapshot>("/api/status");
+      setStatusSnapshot(snapshot);
+      setSession((current) => (current ? { ...current, overview: snapshot.overview } : current));
+    } catch (requestError) {
+      setStatusError(requestError instanceof Error ? requestError.message : "Failed to load status");
+    } finally {
+      setStatusLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    if (!sessionReady) {
+      return;
+    }
+
+    void loadStatus();
+    const intervalId = window.setInterval(() => {
+      void loadStatus();
+    }, 60_000);
+
+    return () => window.clearInterval(intervalId);
+  }, [sessionReady]);
+
   async function loadBookmarks() {
+    if (!session) {
+      return;
+    }
+
     setLoading(true);
     setError(null);
 
@@ -381,19 +497,12 @@ export default function App() {
       });
       requestKeyRef.current = requestKey;
       const params = buildBookmarkParams(0, PAGE_SIZE);
-
-      const [sessionPayload, categoriesPayload, bookmarksPayload] = await Promise.all([
-        fetchJson<SessionPayload>("/api/session"),
-        fetchJson<{ items: Category[] }>("/api/categories"),
-        fetchJson<{ items: Bookmark[] }>(`/api/bookmarks?${params.toString()}`),
-      ]);
+      const bookmarksPayload = await fetchJson<{ items: Bookmark[] }>(`/api/bookmarks?${params.toString()}`);
 
       if (requestKeyRef.current !== requestKey) {
         return;
       }
 
-      setSession(sessionPayload);
-      setCategories(categoriesPayload.items);
       setBookmarks(bookmarksPayload.items);
       setHasMore(bookmarksPayload.items.length === PAGE_SIZE);
     } catch (requestError) {
@@ -404,8 +513,11 @@ export default function App() {
   }
 
   useEffect(() => {
+    if (!sessionReady) {
+      return;
+    }
     void loadBookmarks();
-  }, [deferredQuery, selectedCategory, mediaFilter]);
+  }, [sessionReady, deferredQuery, selectedCategory, mediaFilter]);
 
   const activeCategory = useMemo(
     () => categories.find((category) => category.slug === selectedCategory),
@@ -413,7 +525,7 @@ export default function App() {
   );
 
   async function loadMoreBookmarks() {
-    if (loading || loadingMore || !hasMore) {
+    if (!session || loading || loadingMore || !hasMore) {
       return;
     }
 
@@ -466,7 +578,7 @@ export default function App() {
       body: JSON.stringify({ bookmarkId, categoryName }),
     });
 
-    await loadBookmarks();
+    await Promise.all([loadMeta({ quiet: true }), loadStatus(), loadBookmarks()]);
   }
 
   function onSearchChange(value: string) {
@@ -512,8 +624,8 @@ export default function App() {
             <strong>{session?.overview.uncategorizedCount ?? 0}</strong>
           </div>
           <div className="stat stat--wide">
-            <span>Latest import</span>
-            <strong>{formatDate(session?.overview.latestImportAt)}</strong>
+            <span>Newest bookmark</span>
+            <strong>{formatDate(session?.overview.latestBookmarkCreatedAt)}</strong>
           </div>
         </div>
       </section>
@@ -579,6 +691,85 @@ export default function App() {
 
         <section className="results-panel">
           {error ? <div className="panel error-banner">{error}</div> : null}
+          {initializing ? <div className="panel loading-banner">Loading archive metadata...</div> : null}
+
+          <section className="panel sync-panel">
+            <div className="panel__header sync-panel__header">
+              <div>
+                <p className="results-header__eyebrow">ops board</p>
+                <h2>Portal status</h2>
+              </div>
+              <div className="sync-panel__actions">
+                <a className="button button--ghost" href="/api/healthz" target="_blank" rel="noreferrer">
+                  Health endpoint
+                </a>
+                <span className={healthStatusPillClass(statusSnapshot?.overallStatus)}>
+                  {formatHealthState(statusSnapshot?.overallStatus)}
+                </span>
+              </div>
+            </div>
+
+            <div className="sync-panel__grid">
+              <div className="sync-cell">
+                <span>Sync state</span>
+                <strong>{formatSyncState(statusSnapshot?.syncStatus.status)}</strong>
+              </div>
+              <div className="sync-cell">
+                <span>Last successful sync</span>
+                <strong>{formatDate(statusSnapshot?.syncStatus.lastSuccessAt)}</strong>
+              </div>
+              <div className="sync-cell">
+                <span>Last attempt</span>
+                <strong>{formatDate(statusSnapshot?.syncStatus.lastAttemptAt)}</strong>
+              </div>
+              <div className="sync-cell">
+                <span>Last import log</span>
+                <strong>{formatDate(statusSnapshot?.overview.latestImportRunAt)}</strong>
+              </div>
+              <div className="sync-cell">
+                <span>Last bookmark ingested</span>
+                <strong>{formatDate(statusSnapshot?.overview.latestBookmarkImportedAt)}</strong>
+              </div>
+              <div className="sync-cell">
+                <span>Media backlog</span>
+                <strong>{statusSnapshot?.opsStatus.media.bookmarksMissingMedia ?? 0}</strong>
+              </div>
+              <div className="sync-cell">
+                <span>Active alerts</span>
+                <strong>{statusSnapshot?.opsStatus.activeAlerts.length ?? 0}</strong>
+              </div>
+              <div className="sync-cell">
+                <span>Unsorted queue</span>
+                <strong>{statusSnapshot?.overview.uncategorizedCount ?? session?.overview.uncategorizedCount ?? 0}</strong>
+              </div>
+            </div>
+
+            {statusSnapshot?.syncStatus.lastError ? (
+              <p className="sync-panel__error">{statusSnapshot.syncStatus.lastError}</p>
+            ) : null}
+            {statusLoading && !statusSnapshot ? (
+              <p className="sync-panel__note">Refreshing operational health...</p>
+            ) : null}
+            {statusError ? <p className="sync-panel__error">{statusError}</p> : null}
+
+            {statusSnapshot?.checks.length ? (
+              <div className="status-check-list">
+                {statusSnapshot.checks.map((check) => (
+                  <article
+                    key={check.key}
+                    className={`status-check status-check--${check.status}`}
+                  >
+                    <div className="status-check__copy">
+                      <span className="status-check__label">{check.label}</span>
+                      <p>{check.summary}</p>
+                    </div>
+                    <span className={healthStatusPillClass(check.status)}>{formatHealthState(check.status)}</span>
+                  </article>
+                ))}
+              </div>
+            ) : null}
+          </section>
+
           {loading ? <div className="panel loading-banner">Loading archive...</div> : null}
 
           <div className="bookmark-grid">

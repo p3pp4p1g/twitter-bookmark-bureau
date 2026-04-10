@@ -294,17 +294,21 @@ async function runTwitterBookmarksSyncDetailed(
 
   const maxPages = options.maxPages ?? 5;
   const shouldClassify = options.classify ?? true;
+  const newBookmarks: BookmarkRecord[] = [];
+  const rawPages: Array<Record<string, unknown>> = [];
+  let cursor: string | undefined;
+  let fetchedBookmarks = 0;
+  let fetchedPages = 0;
+  let stoppedReason = "reached_page_limit";
+  let classifiedBookmarks = 0;
+  let snapshotKey: string | undefined;
+  let stats: SyncRunStats | undefined;
+  let persistedBookmarks = false;
 
   await markSyncStarted(env.DB, TWITTER_BOOKMARKS_SOURCE);
 
   try {
     const runSeenIds = new Set<string>();
-    const newBookmarks: BookmarkRecord[] = [];
-    const rawPages: Array<Record<string, unknown>> = [];
-    let cursor: string | undefined;
-    let fetchedBookmarks = 0;
-    let fetchedPages = 0;
-    let stoppedReason = "reached_page_limit";
 
     for (let pageIndex = 0; pageIndex < maxPages; pageIndex += 1) {
       const page = await fetchBookmarksPage(env, cursor);
@@ -348,8 +352,8 @@ async function runTwitterBookmarksSyncDetailed(
     if (newBookmarks.length) {
       await upsertBookmarks(env.DB, newBookmarks);
     }
+    persistedBookmarks = true;
 
-    let classifiedBookmarks = 0;
     if (shouldClassify && newBookmarks.length && env.GEMINI_API_KEY) {
       const categories = await listCategories(env.DB);
       const classification = await classifyBookmarksWithGeminiSafe(env, newBookmarks, categories);
@@ -362,7 +366,6 @@ async function runTwitterBookmarksSyncDetailed(
       classifiedBookmarks += await classifyPendingBookmarks(env);
     }
 
-    let snapshotKey: string | undefined;
     if (env.RAW_BOOKMARKS) {
       snapshotKey = `twitter-sync/${new Date().toISOString()}.json`;
       await env.RAW_BOOKMARKS.put(
@@ -378,7 +381,7 @@ async function runTwitterBookmarksSyncDetailed(
       );
     }
 
-    const stats: SyncRunStats = {
+    stats = {
       fetchedBookmarks,
       newBookmarks: newBookmarks.length,
       fetchedPages,
@@ -403,9 +406,36 @@ async function runTwitterBookmarksSyncDetailed(
       newBookmarks,
     };
   } catch (error) {
+    if (persistedBookmarks) {
+      stats = {
+        fetchedBookmarks,
+        newBookmarks: newBookmarks.length,
+        fetchedPages,
+        classifiedBookmarks,
+        stoppedReason,
+        snapshotKey,
+      };
+      try {
+        await recordImportRun(
+          env.DB,
+          TWITTER_BOOKMARKS_SOURCE,
+          {
+            ...stats,
+            syncResult: "partial-failure",
+            syncError: error instanceof Error ? error.message : String(error),
+          },
+          snapshotKey,
+        );
+      } catch (recordError) {
+        console.warn("Failed to record partial import run", recordError);
+      }
+    }
+
     await markSyncFinished(env.DB, TWITTER_BOOKMARKS_SOURCE, {
       status: "error",
       error: error instanceof Error ? error.message : String(error),
+      cursor,
+      stats,
     });
     throw error;
   }
