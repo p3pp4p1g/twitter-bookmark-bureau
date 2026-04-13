@@ -44,7 +44,7 @@
     "axios": "^1.14.1"
   },
   "devDependencies": {
-    "@cloudflare/workers-types": "^4.20260303.0",
+    "@cloudflare/workers-types": "^4.20260413.1",
     "@types/node": "^24.5.2",
     "@types/react": "^19.1.13",
     "@types/react-dom": "^19.1.9",
