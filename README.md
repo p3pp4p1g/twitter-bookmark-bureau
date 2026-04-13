@@ -43,7 +43,7 @@ Owns the product surface:
 - Gemini categorization
 - server-side access gate with PSK
 - daily scheduled sync
-- media mirroring for the daily delta
+- media mirroring for the daily delta plus limited historical backlog draining
 - Telegram notifications for operational state changes
 
 Main files:
@@ -129,7 +129,7 @@ This repo is original code, but these projects informed the approach:
 3. It stops when it reaches already-known pages
 4. It imports only new bookmarks
 5. It classifies the new bookmarks and retries any older uncategorized backlog still left in D1
-6. It mirrors only the new media for that daily delta
+6. It mirrors the new media for that daily delta and drains a small historical media backlog batch
 7. It sends Telegram notifications only on relevant state changes
 
 ### Historical Recovery / Phase 3
@@ -325,7 +325,7 @@ Run historical backfill once:
 npm run agent:history
 ```
 
-Run media backlog reconciliation only:
+Run media backlog reconciliation only for faster catch-up or one-off repair:
 
 ```bash
 npm run agent:media

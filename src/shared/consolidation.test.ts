@@ -70,4 +70,33 @@ describe("consolidateClassification", () => {
     expect(result.assignments[0]?.categorySlug).toBe("ai-image-generation-prompts");
     expect(result.assignments[0]?.manualCategorySlug).toBe("my-custom-category");
   });
+
+  it("preserves referenced non-canonical categories so downstream writes do not break FK constraints", () => {
+    const result = consolidateClassification(
+      [
+        makeBookmark({
+          text: "Deep dive on corporate politics in big companies",
+          categorySlug: "career-corporate-politics",
+          categoryName: "Career & Corporate Politics",
+        }),
+      ],
+      [
+        {
+          slug: "career-corporate-politics",
+          name: "Career & Corporate Politics",
+          description: "Career dynamics and corporate politics inside larger companies.",
+          color: "#275D73",
+          source: "llm",
+        },
+      ],
+    );
+
+    expect(result.assignments[0]?.categorySlug).toBe("career-corporate-politics");
+    expect(result.categories).toContainEqual(
+      expect.objectContaining({
+        slug: "career-corporate-politics",
+        name: "Career & Corporate Politics",
+      }),
+    );
+  });
 });

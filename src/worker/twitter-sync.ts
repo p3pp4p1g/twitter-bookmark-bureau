@@ -2,6 +2,7 @@ import { normalizeBookmarks, type BookmarkRecord } from "../shared/schema";
 import {
   findExistingBookmarkIds,
   getBookmarksForClassification,
+  getBookmarksForMediaReconciliation,
   getOpsStatus,
   getSyncStatus,
   listCategories,
@@ -63,6 +64,8 @@ type TwitterSyncDetailedResult = {
 
 const PENDING_CLASSIFICATION_BATCH_LIMIT = 24;
 const PENDING_CLASSIFICATION_MAX_ROUNDS = 100;
+const MEDIA_BACKLOG_DRAIN_LIMIT = 12;
+const MEDIA_BACKLOG_DRAIN_LIMIT_MAX = 100;
 
 function asRecord(value: unknown): Record<string, unknown> | undefined {
   return typeof value === "object" && value !== null ? (value as Record<string, unknown>) : undefined;
@@ -477,6 +480,52 @@ export async function runTwitterBookmarksSync(
   return detailed.result;
 }
 
+function getMediaBacklogDrainLimit(env: Env) {
+  if (env.MEDIA_BACKLOG_DRAIN_LIMIT === undefined) {
+    return MEDIA_BACKLOG_DRAIN_LIMIT;
+  }
+
+  const parsed = Number(env.MEDIA_BACKLOG_DRAIN_LIMIT);
+  if (!Number.isFinite(parsed)) {
+    return MEDIA_BACKLOG_DRAIN_LIMIT;
+  }
+
+  return Math.max(0, Math.min(Math.trunc(parsed), MEDIA_BACKLOG_DRAIN_LIMIT_MAX));
+}
+
+async function reconcileMediaBacklog(
+  env: Env,
+  options: { limit?: number; excludeIds?: string[] } = {},
+) {
+  const limit = options.limit ?? getMediaBacklogDrainLimit(env);
+  if (limit <= 0) {
+    return { processedBookmarks: 0, mirrored: 0, failed: 0, backfilled: 0 };
+  }
+
+  const bookmarks = await getBookmarksForMediaReconciliation(env.DB, {
+    limit,
+    excludeIds: options.excludeIds,
+  });
+
+  let mirrored = 0;
+  let failed = 0;
+  let backfilled = 0;
+
+  for (const bookmark of bookmarks) {
+    const result = await reconcileBookmarkMedia(env, bookmark);
+    mirrored += result.mirrored;
+    failed += result.failed;
+    backfilled += result.backfilled;
+  }
+
+  return {
+    processedBookmarks: bookmarks.length,
+    mirrored,
+    failed,
+    backfilled,
+  };
+}
+
 function classifyError(error: unknown) {
   const message = error instanceof Error ? error.message : String(error);
   if (/401|403|auth|ct0|cookie/i.test(message)) {
@@ -522,12 +571,21 @@ export async function runScheduledTwitterSync(env: Env) {
     const { result, newBookmarks } = await runTwitterBookmarksSyncDetailed(env);
     let mirrored = 0;
     let failed = 0;
+    let backfilled = 0;
 
     for (const bookmark of newBookmarks.filter((item) => item.media.length > 0)) {
       const mediaResult = await reconcileBookmarkMedia(env, bookmark);
       mirrored += mediaResult.mirrored;
       failed += mediaResult.failed;
+      backfilled += mediaResult.backfilled;
     }
+
+    const backlogResult = await reconcileMediaBacklog(env, {
+      excludeIds: newBookmarks.map((bookmark) => bookmark.id),
+    });
+    mirrored += backlogResult.mirrored;
+    failed += backlogResult.failed;
+    backfilled += backlogResult.backfilled;
 
     const opsStatus = await getOpsStatus(env.DB);
 
@@ -536,10 +594,12 @@ export async function runScheduledTwitterSync(env: Env) {
         code: "media-sync",
         severity: "error",
         fingerprint: "media-sync",
-        message: `Bookmark Bureau: espelhamento de midia falhou. falhas=${failed} pendentes=${opsStatus.media.bookmarksMissingMedia}.`,
+        message: `Bookmark Bureau: espelhamento de midia falhou. falhas=${failed} corrigidas=${backfilled} pendentes=${opsStatus.media.bookmarksMissingMedia}.`,
         metadata: {
           mirrored,
           failed,
+          backfilled,
+          backlogProcessed: backlogResult.processedBookmarks,
           mediaSummary: opsStatus.media,
         },
       });
@@ -547,10 +607,12 @@ export async function runScheduledTwitterSync(env: Env) {
       await resolveAlert(env, {
         code: "media-sync",
         fingerprint: "media-sync",
-        message: `Bookmark Bureau: espelhamento de midia ok. midias=${mirrored} pendentes=${opsStatus.media.bookmarksMissingMedia}.`,
+        message: `Bookmark Bureau: espelhamento de midia ok. midias=${mirrored} corrigidas=${backfilled} backlog=${backlogResult.processedBookmarks} pendentes=${opsStatus.media.bookmarksMissingMedia}.`,
         metadata: {
           mirrored,
           failed,
+          backfilled,
+          backlogProcessed: backlogResult.processedBookmarks,
           mediaSummary: opsStatus.media,
         },
       });
@@ -559,10 +621,11 @@ export async function runScheduledTwitterSync(env: Env) {
     await resolveAlert(env, {
       code: "x-session",
       fingerprint: "x-session",
-      message: `Bookmark Bureau: sessao do X valida. sync diario ok. novos=${result.newBookmarks} midias=${mirrored}.`,
+      message: `Bookmark Bureau: sessao do X valida. sync diario ok. novos=${result.newBookmarks} midias=${mirrored} corrigidas=${backfilled}.`,
       metadata: {
         imported: result.newBookmarks,
         mirrored,
+        backfilled,
       },
     });
     await resolveAlert(env, {
@@ -578,7 +641,7 @@ export async function runScheduledTwitterSync(env: Env) {
 
     await notifyInfo(
       env,
-      `Bookmark Bureau: sync concluido. novos=${result.newBookmarks} classificados=${result.classifiedBookmarks} midias=${mirrored} pendentes=${opsStatus.media.bookmarksMissingMedia} paginas=${result.fetchedPages} motivo=${result.stoppedReason}`,
+      `Bookmark Bureau: sync concluido. novos=${result.newBookmarks} classificados=${result.classifiedBookmarks} midias=${mirrored} corrigidas=${backfilled} backlog=${backlogResult.processedBookmarks} pendentes=${opsStatus.media.bookmarksMissingMedia} paginas=${result.fetchedPages} motivo=${result.stoppedReason}`,
     );
   } catch (error) {
     const classified = classifyError(error);

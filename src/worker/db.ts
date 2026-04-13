@@ -5,6 +5,8 @@ import type {
   BookmarkFilters,
   MediaAssetRecord,
 } from "../shared/schema";
+import { colorFromSlug } from "../shared/schema";
+import { getCanonicalCategories } from "../shared/consolidation";
 import { buildBookmarkQuery } from "../shared/query";
 
 export type BookmarkView = {
@@ -131,6 +133,81 @@ export type PublicHealthView = {
   lastSuccessAt?: string;
 };
 
+const CANONICAL_CATEGORIES_BY_SLUG = new Map(
+  getCanonicalCategories().map((category) => [category.slug, category]),
+);
+
+function humanizeCategorySlug(slug: string) {
+  return slug
+    .split("-")
+    .filter(Boolean)
+    .map((segment) => segment.charAt(0).toUpperCase() + segment.slice(1))
+    .join(" ");
+}
+
+function inferMissingCategory(slug: string, bookmarks: BookmarkRecord[]): CategoryRecord {
+  const canonical = CANONICAL_CATEGORIES_BY_SLUG.get(slug);
+  if (canonical) {
+    return canonical;
+  }
+
+  const namedBookmark = bookmarks.find(
+    (bookmark) => bookmark.manualCategorySlug === slug || bookmark.categorySlug === slug,
+  );
+
+  return {
+    slug,
+    name: namedBookmark?.categoryName?.trim() || humanizeCategorySlug(slug),
+    description: undefined,
+    color: colorFromSlug(slug),
+    source: bookmarks.some((bookmark) => bookmark.manualCategorySlug === slug) ? "manual" : "llm",
+  };
+}
+
+async function ensureReferencedCategories(db: D1Database, bookmarks: BookmarkRecord[]) {
+  const bookmarksBySlug = new Map<string, BookmarkRecord[]>();
+
+  for (const bookmark of bookmarks) {
+    for (const slug of [bookmark.categorySlug, bookmark.manualCategorySlug]) {
+      if (!slug) {
+        continue;
+      }
+
+      const existing = bookmarksBySlug.get(slug);
+      if (existing) {
+        existing.push(bookmark);
+      } else {
+        bookmarksBySlug.set(slug, [bookmark]);
+      }
+    }
+  }
+
+  if (!bookmarksBySlug.size) {
+    return;
+  }
+
+  const slugs = [...bookmarksBySlug.keys()];
+  const existingRows = await db
+    .prepare(
+      `
+        SELECT slug
+        FROM categories
+        WHERE slug IN (${slugs.map(() => "?").join(", ")})
+      `,
+    )
+    .bind(...slugs)
+    .all<{ slug: string }>();
+
+  const existingSlugs = new Set((existingRows.results ?? []).map((row) => row.slug));
+  const missingCategories = slugs
+    .filter((slug) => !existingSlugs.has(slug))
+    .map((slug) => inferMissingCategory(slug, bookmarksBySlug.get(slug) ?? []));
+
+  if (missingCategories.length) {
+    await upsertCategories(db, missingCategories);
+  }
+}
+
 function rowToBookmarkRecord(row: Record<string, unknown>): BookmarkRecord {
   return {
     id: String(row.id),
@@ -255,6 +332,45 @@ export async function listBookmarksForAgent(
   };
 }
 
+export async function getBookmarksForMediaReconciliation(
+  db: D1Database,
+  options: { limit?: number; excludeIds?: string[] } = {},
+): Promise<BookmarkRecord[]> {
+  const limit = options.limit ?? 25;
+  const excludeIds = options.excludeIds ?? [];
+  const exclusionClause = excludeIds.length
+    ? ` AND b.id NOT IN (${excludeIds.map(() => "?").join(", ")})`
+    : "";
+
+  const rows = await db
+    .prepare(
+      `
+        SELECT DISTINCT b.*
+        FROM bookmarks b
+        WHERE b.has_media = 1
+          AND (
+            EXISTS (
+              SELECT 1
+              FROM media_assets ma
+              WHERE ma.bookmark_id = b.id
+                AND ma.status != 'uploaded'
+            )
+            OR NOT EXISTS (
+              SELECT 1
+              FROM media_assets ma
+              WHERE ma.bookmark_id = b.id
+            )
+          )${exclusionClause}
+        ORDER BY datetime(b.imported_at) ASC
+        LIMIT ?
+      `
+    )
+    .bind(...excludeIds, limit)
+    .all<Record<string, unknown>>();
+
+  return (rows.results ?? []).map(rowToBookmarkRecord);
+}
+
 export async function listCategories(db: D1Database): Promise<CategoryRow[]> {
   const rows = await db
     .prepare(
@@ -354,6 +470,8 @@ export async function upsertBookmarks(db: D1Database, bookmarks: BookmarkRecord[
   if (!bookmarks.length) {
     return;
   }
+
+  await ensureReferencedCategories(db, bookmarks);
 
   const statements = bookmarks.map((bookmark) =>
     db

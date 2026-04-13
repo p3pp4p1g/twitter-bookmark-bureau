@@ -126,4 +126,52 @@ describe("classifyBookmarksWithGemini", () => {
     expect(result.assignments[0]?.categoryConfidence).toBe(0);
     expect(result.categories.some((category) => category.slug === "needs-review")).toBe(true);
   });
+
+  it("keeps a newly suggested non-canonical category when it is referenced by an assignment", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          candidates: [
+            {
+              content: {
+                parts: [
+                  {
+                    text: JSON.stringify({
+                      categories: [
+                        {
+                          name: "Career & Corporate Politics",
+                          description: "Career dynamics and corporate politics inside larger companies.",
+                        },
+                      ],
+                      assignments: [
+                        {
+                          id: "1",
+                          categoryName: "Career & Corporate Politics",
+                          confidence: 0.81,
+                          reason: "The bookmark is about navigating corporate politics.",
+                          summary: "Corporate politics career advice.",
+                        },
+                      ],
+                    }),
+                  },
+                ],
+              },
+            },
+          ],
+        }),
+        { status: 200 },
+      ),
+    );
+
+    const result = await classifyBookmarksWithGemini(makeEnv(), [makeBookmark()], []);
+
+    expect(result.assignments[0]?.categorySlug).toBe("career-corporate-politics");
+    expect(result.assignments[0]?.categoryName).toBe("Career & Corporate Politics");
+    expect(result.categories).toContainEqual(
+      expect.objectContaining({
+        slug: "career-corporate-politics",
+        name: "Career & Corporate Politics",
+      }),
+    );
+  });
 });

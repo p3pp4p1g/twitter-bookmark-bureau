@@ -6,6 +6,7 @@ export type Env = {
   GEMINI_API_KEY?: string;
   GEMINI_MODEL: string;
   INGEST_API_KEY?: string;
+  MEDIA_BACKLOG_DRAIN_LIMIT?: string;
   MEDIA_BUCKET?: R2Bucket;
   RAW_BOOKMARKS?: R2Bucket;
   SESSION_SECRET?: string;
