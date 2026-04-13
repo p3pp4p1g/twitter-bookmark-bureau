@@ -280,6 +280,13 @@ input {
   align-items: center;
 }
 
+.sync-panel__actions {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+}
+
 .sync-panel__grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -345,6 +352,12 @@ input {
   box-shadow: inset 0 0 0 999px rgba(75, 121, 103, 0.1);
 }
 
+.status-pill--warning {
+  color: #9b6a12;
+  border-color: rgba(155, 106, 18, 0.28);
+  box-shadow: inset 0 0 0 999px rgba(155, 106, 18, 0.1);
+}
+
 .status-pill--error {
   color: var(--accent);
   border-color: rgba(179, 74, 49, 0.28);
@@ -355,6 +368,45 @@ input {
   display: grid;
   gap: 0.35rem;
   color: var(--muted);
+}
+
+.status-check-list {
+  display: grid;
+  gap: 0.75rem;
+}
+
+.status-check {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+  border: 1px solid var(--line);
+  background: rgba(255, 252, 247, 0.88);
+  padding: 0.9rem;
+}
+
+.status-check--warning {
+  border-color: rgba(155, 106, 18, 0.24);
+}
+
+.status-check--error {
+  border-color: rgba(179, 74, 49, 0.26);
+}
+
+.status-check__copy {
+  display: grid;
+  gap: 0.35rem;
+}
+
+.status-check__copy p {
+  margin: 0;
+  color: var(--muted);
+  line-height: 1.55;
+}
+
+.status-check__label {
+  font-family: "Fraunces", serif;
+  font-size: 1rem;
 }
 
 .bookmark-grid {
@@ -562,5 +614,14 @@ input {
 
   .sync-panel__grid {
     grid-template-columns: 1fr;
+  }
+
+  .sync-panel__actions,
+  .status-check {
+    align-items: stretch;
+  }
+
+  .status-check {
+    flex-direction: column;
   }
 }

@@ -427,12 +427,24 @@ export function consolidateClassification(
     };
   });
 
+  const referencedSlugs = new Set<string>();
+  for (const bookmark of consolidatedAssignments) {
+    const slug = bookmark.manualCategorySlug ?? bookmark.categorySlug;
+    if (slug) {
+      referencedSlugs.add(slug);
+    }
+  }
+
   return {
-    categories: [...categoryMap.values()]
-      .filter((category) => category.slug in CATEGORY_DEFINITIONS)
-      .map((category) =>
-        category.slug in CATEGORY_DEFINITIONS ? makeCategory(category.slug) : category,
-      ),
+    categories: [...referencedSlugs]
+      .map((slug) => {
+        const category = categoryMap.get(slug);
+        if (slug in CATEGORY_DEFINITIONS) {
+          return makeCategory(slug);
+        }
+        return category;
+      })
+      .filter((category): category is CategoryRecord => Boolean(category)),
     assignments: consolidatedAssignments,
     changedCount,
   };

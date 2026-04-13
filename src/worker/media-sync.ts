@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import type { BookmarkRecord, BookmarkMedia } from "../shared/schema";
+import type { BookmarkRecord, BookmarkMedia, MediaAssetRecord } from "../shared/schema";
 import {
   getMediaAssetByHash,
   syncMirroredMediaIntoBookmark,
@@ -56,6 +56,30 @@ function asRecord(value: unknown): Record<string, unknown> | undefined {
   return typeof value === "object" && value !== null ? (value as Record<string, unknown>) : undefined;
 }
 
+function extractMediaStorageKey(media: BookmarkMedia) {
+  if (media.storageKey) {
+    return media.storageKey;
+  }
+
+  if (!media.mirroredUrl) {
+    return undefined;
+  }
+
+  const marker = "/api/media/";
+  if (media.mirroredUrl.startsWith(marker)) {
+    return media.mirroredUrl.slice(marker.length) || undefined;
+  }
+
+  try {
+    const parsed = new URL(media.mirroredUrl);
+    return parsed.pathname.startsWith(marker)
+      ? parsed.pathname.slice(marker.length) || undefined
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 function findRawMediaCandidate(bookmark: BookmarkRecord, media: BookmarkMedia) {
   const raw = asRecord(bookmark.raw);
   const legacy = asRecord(raw?.legacy);
@@ -104,6 +128,27 @@ function resolveMediaSource(bookmark: BookmarkRecord, media: BookmarkMedia) {
     downloadUrl: media.thumbnailUrl ?? media.url,
     normalizedUrl: normalizeMediaUrl(media.thumbnailUrl ?? media.url),
     mediaType: media.type,
+  };
+}
+
+function buildExistingMirroredAsset(
+  bookmark: BookmarkRecord,
+  media: BookmarkMedia,
+  source: ReturnType<typeof resolveMediaSource>,
+): MediaAssetRecord {
+  return {
+    bookmarkId: bookmark.id,
+    mediaId: media.id,
+    sourceUrl: media.url,
+    normalizedUrl: source.normalizedUrl,
+    thumbnailUrl: media.thumbnailUrl,
+    mediaType: source.mediaType,
+    contentHash: media.contentHash,
+    mimeType: media.mimeType,
+    sizeBytes: media.sizeBytes,
+    r2Key: extractMediaStorageKey(media),
+    status: "uploaded",
+    attemptCount: 1,
   };
 }
 
@@ -190,13 +235,19 @@ export async function reconcileBookmarkMedia(
 ) {
   let mirrored = 0;
   let failed = 0;
+  let backfilled = 0;
 
   for (const media of bookmark.media) {
+    const source = resolveMediaSource(bookmark, media);
+
     if (media.mirroredUrl && !isBrokenMirroredMedia(media)) {
+      const existingAsset = buildExistingMirroredAsset(bookmark, media, source);
+      await upsertMediaAsset(env.DB, existingAsset);
+      await syncMirroredMediaIntoBookmark(env.DB, existingAsset);
+      backfilled += 1;
       continue;
     }
 
-    const source = resolveMediaSource(bookmark, media);
     const candidateUrl = source.downloadUrl;
     if (!candidateUrl) {
       failed += 1;
@@ -224,9 +275,23 @@ export async function reconcileBookmarkMedia(
       mirrored += 1;
     } catch (error) {
       console.warn(`Media reconcile failed for ${bookmark.id}/${media.id}`, error);
+      const message = error instanceof Error ? error.message : String(error);
+      const failedAsset = {
+        bookmarkId: bookmark.id,
+        mediaId: media.id,
+        sourceUrl: media.url,
+        normalizedUrl: source.normalizedUrl,
+        thumbnailUrl: media.thumbnailUrl,
+        mediaType: source.mediaType,
+        status: "failed" as const,
+        lastError: message,
+        attemptCount: 1,
+      };
+      await upsertMediaAsset(env.DB, failedAsset);
+      await syncMirroredMediaIntoBookmark(env.DB, failedAsset);
       failed += 1;
     }
   }
 
-  return { mirrored, failed };
+  return { mirrored, failed, backfilled };
 }

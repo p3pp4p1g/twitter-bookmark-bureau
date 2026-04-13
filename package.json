@@ -40,7 +40,8 @@
     "zod": "^4.1.11"
   },
   "overrides": {
-    "picomatch": "^4.0.4"
+    "picomatch": "^4.0.4",
+    "axios": "^1.14.1"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^4.20260303.0",

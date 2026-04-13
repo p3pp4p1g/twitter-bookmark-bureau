@@ -43,7 +43,7 @@ Owns the product surface:
 - Gemini categorization
 - server-side access gate with PSK
 - daily scheduled sync
-- media mirroring for the daily delta
+- media mirroring for the daily delta plus limited historical backlog draining
 - Telegram notifications for operational state changes
 
 Main files:
@@ -129,7 +129,7 @@ This repo is original code, but these projects informed the approach:
 3. It stops when it reaches already-known pages
 4. It imports only new bookmarks
 5. It classifies the new bookmarks and retries any older uncategorized backlog still left in D1
-6. It mirrors only the new media for that daily delta
+6. It mirrors the new media for that daily delta and drains a small historical media backlog batch
 7. It sends Telegram notifications only on relevant state changes
 
 ### Historical Recovery / Phase 3
@@ -325,7 +325,7 @@ Run historical backfill once:
 npm run agent:history
 ```
 
-Run media backlog reconciliation only:
+Run media backlog reconciliation only for faster catch-up or one-off repair:
 
 ```bash
 npm run agent:media
@@ -354,6 +354,31 @@ All admin endpoints require `INGEST_API_KEY`.
 - `POST /api/admin/alerts`
 - `POST /api/admin/sync`
 - `POST /api/admin/sync/daily`
+
+## Status And Monitoring
+
+The app now exposes two monitoring surfaces:
+
+- `GET /api/status`
+  - protected by the normal site session
+  - returns the detailed internal status snapshot used by the UI status board
+  - includes sync freshness, import consistency, unsorted backlog, media backlog, and active alerts
+- `GET /api/healthz`
+  - public and intentionally minimal
+  - returns `200` when the service is healthy or degraded
+  - returns `503` when the health checks detect a failing state
+  - safe for external uptime monitors because it does not expose bookmark content
+
+Recommended monitoring setup:
+
+1. Use Telegram notifications from the Worker for state changes that happen during a sync run.
+2. Add an external monitor such as Better Stack, UptimeRobot, or a lightweight GitHub Actions job to poll `https://<your-worker>.workers.dev/api/healthz`.
+3. Alert when `/api/healthz` returns `503` or when the monitor itself stops receiving a successful heartbeat on schedule.
+
+Why both:
+
+- Telegram covers in-band runtime failures when the Worker actually executes.
+- an external monitor covers dead-man-switch scenarios such as cron not firing, deployment regressions, or the Worker becoming unreachable.
 
 ## Telegram Notifications
 
